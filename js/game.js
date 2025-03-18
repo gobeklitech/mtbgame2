@@ -199,12 +199,30 @@ function updateCameraPosition() {
     const offset = new THREE.Vector3(0, 5, 8);
     offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), bicycle.rotation.y);
     
+    // Calculate camera position
+    const cameraX = bicycle.position.x + offset.x;
+    const cameraZ = bicycle.position.z + offset.z;
+    
+    // Get terrain height at camera position
+    const terrainHeightAtCamera = getTerrainHeight(cameraX, cameraZ);
+    
+    // Calculate the proposed camera Y position
+    let cameraY = bicycle.position.y + offset.y;
+    
+    // Check if camera would be too close to or below terrain
+    const minClearance = 2.0; // Minimum desired height above terrain
+    if (cameraY < terrainHeightAtCamera + minClearance) {
+        // Adjust camera height to be above terrain with clearance
+        cameraY = terrainHeightAtCamera + minClearance;
+    }
+    
     // Disable orbit controls temporarily to reposition camera
     controls.enabled = false;
     
-    camera.position.x = bicycle.position.x + offset.x;
-    camera.position.y = bicycle.position.y + offset.y;
-    camera.position.z = bicycle.position.z + offset.z;
+    // Apply the adjusted camera position
+    camera.position.x = cameraX;
+    camera.position.y = cameraY;
+    camera.position.z = cameraZ;
     
     // Look at bicycle
     camera.lookAt(bicycle.position.x, bicycle.position.y + 1, bicycle.position.z);
