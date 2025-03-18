@@ -5,7 +5,7 @@ import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
 // Main game variables
 let scene, camera, renderer, clock;
 let terrain, bicycle, controls;
-let keys = { w: false, left: false, right: false, up: false, down: false, space: false, s: false, c: false };
+let keys = { w: false, left: false, right: false, up: false, down: false, space: false, s: false, c: false, e: false };
 let gameSpeed = 0;
 const MAX_SPEED = 3.0;
 let isSpeedCapped = true;
@@ -24,8 +24,14 @@ const JUMP_FORCE = 0.5;
 const GRAVITY = 0.02;
 let isWheelieMode = false;
 let wheelieAngle = 0;
-const MAX_WHEELIE_ANGLE = Math.PI / 6; // 30 degrees
-const BRAKE_FORCE = 1.0;
+const MAX_SAFE_WHEELIE_ANGLE = Math.PI / 6; // 30 degrees - safe threshold
+const CRITICAL_WHEELIE_ANGLE = Math.PI / 3; // 60 degrees - will fall if exceeded
+const WHEELIE_DIFFICULTY = 1.5; // Higher = harder to balance
+let twistAngle = 0; // Track rotation for mid-air tricks
+const TWIST_SPEED = 0.2; // Rotation speed per frame
+let originalDirection = new THREE.Vector3(); // Store original direction during twists
+let isWipingOut = false; // Track if player is currently falling
+let wipeOutTime = 0; // Track wipeout animation time
 
 // Initialize the game
 function init() {
@@ -510,6 +516,10 @@ function handleKeyDown(event) {
                 jumpVelocity = JUMP_FORCE;
             }
             break;
+        case 'e':
+        case 'E':
+            keys.e = true;
+            break;
     }
 }
 
@@ -544,11 +554,21 @@ function handleKeyUp(event) {
         case ' ':
             keys.space = false;
             break;
+        case 'e':
+        case 'E':
+            keys.e = false;
+            break;
     }
 }
 
 // Update bicycle position and rotation
 function updateBicycle(deltaTime) {
+    // Don't update physics during a wipeout animation
+    if (isWipingOut) {
+        updateWipeOutAnimation(deltaTime);
+        return;
+    }
+    
     // Check for collisions first
     checkCollisions();
     
@@ -563,6 +583,14 @@ function updateBicycle(deltaTime) {
     
     const aheadHeight = getTerrainHeight(aheadPosition.x, aheadPosition.z);
     const heightDifference = aheadHeight - currentHeight;
+    
+    // Also check even further ahead to detect transitions
+    const farAheadPosition = new THREE.Vector3()
+        .copy(bicycle.position)
+        .add(moveDirection.clone().multiplyScalar(3.0)); // Check twice as far
+    
+    const farAheadHeight = getTerrainHeight(farAheadPosition.x, farAheadPosition.z);
+    const farHeightDifference = farAheadHeight - aheadHeight;
     
     // Calculate slope factor - can be positive (uphill) or negative (downhill)
     let slopeFactor = 0;
@@ -581,6 +609,9 @@ function updateBicycle(deltaTime) {
         const steepness = Math.min(Math.abs(heightDifference), 4) / 4;
         slopeFactor = steepness;
     }
+    
+    // Detect transition from uphill to downhill (crest of a hill)
+    const isHillCrest = heightDifference > 0 && farHeightDifference < -0.5;
     
     // Apply slope resistance for uphill (up to 95% speed reduction on steepest slopes)
     // or speed boost for downhill (up to 40% speed increase on steepest slopes)
@@ -642,31 +673,32 @@ function updateBicycle(deltaTime) {
         }
     }
     
-    // Update wheelie
+    // Update wheelie with balancing mechanics
     if (isWheelieMode) {
-        // Gradually increase wheelie angle when down arrow is pressed
-        wheelieAngle = Math.min(wheelieAngle + deltaTime * 0.8, MAX_WHEELIE_ANGLE);
+        // Calculate balance difficulty based on speed and slope
+        const speedFactor = Math.min(gameSpeed / MAX_SPEED, 1) * WHEELIE_DIFFICULTY;
+        const slopeFactor = isUphillSlope ? 0.5 : (isDownhillSlope ? 1.5 : 1.0);
+        const balanceDifficulty = speedFactor * slopeFactor;
+        
+        // Random balance factor to make it challenging
+        const randomBalance = (Math.random() - 0.5) * 0.02 * balanceDifficulty;
+        
+        // Increase wheelie angle when down arrow is pressed - no max limit anymore
+        wheelieAngle += (deltaTime * 0.8) + randomBalance;
+        
+        // Check if we've gone past the point of no return
+        if (wheelieAngle > CRITICAL_WHEELIE_ANGLE) {
+            // We've fallen over backward!
+            startWipeOut("wheelie");
+            return;
+        }
     } else {
-        // Gradually return to normal position
-        wheelieAngle = Math.max(wheelieAngle - deltaTime * 1.2, 0);
+        // Gradually return to normal position, but harder to recover from extreme wheelie
+        const recoveryRate = wheelieAngle > MAX_SAFE_WHEELIE_ANGLE ? 0.6 : 1.2;
+        wheelieAngle = Math.max(wheelieAngle - deltaTime * recoveryRate, 0);
     }
     
-    // Apply rotation based on steering
-    bicycle.rotation.y += steerAngle * gameSpeed;
-    
-    // Apply tilt (rotation along z-axis)
-    bicycle.rotation.z = leanAngle;
-    
-    // Apply wheelie (rotation along x-axis)
-    bicycle.rotation.x = wheelieAngle;
-    
-    // Move bicycle forward based on speed and direction
-    bicycle.position.add(moveDirection.multiplyScalar(gameSpeed));
-    
-    // Get terrain height at bicycle position
-    const terrainHeight = getTerrainHeight(bicycle.position.x, bicycle.position.z);
-    
-    // Handle jumping
+    // Handle jumping (manual jumps or from terrain transitions)
     if (isJumping) {
         // Apply gravity to jump velocity
         jumpVelocity -= GRAVITY;
@@ -674,18 +706,142 @@ function updateBicycle(deltaTime) {
         // Update position based on jump velocity
         bicycle.position.y += jumpVelocity;
         
+        // Apply twist if E key is pressed and we're in the air
+        if (keys.e) {
+            // When E is first pressed in a jump, store the original direction
+            if (twistAngle === 0) {
+                // Store the current forward direction vector and Y rotation
+                originalDirection = moveDirection.clone();
+            }
+            
+            // Increment twist angle (barrel roll around forward axis)
+            twistAngle += TWIST_SPEED;
+            
+            // Save original Y rotation
+            const originalYRotation = bicycle.rotation.y;
+            
+            // Reset rotation before applying quaternion to avoid compounding rotations
+            bicycle.rotation.set(0, originalYRotation, 0);
+            
+            // Create quaternion for barrel roll (rotate around local Z axis - the bike's forward direction)
+            const rollAxis = new THREE.Vector3(0, 0, 1);
+            const rollQuat = new THREE.Quaternion().setFromAxisAngle(rollAxis, twistAngle);
+            
+            // Apply quaternion to bike
+            bicycle.quaternion.multiply(rollQuat);
+            
+            // Move in the original direction
+            bicycle.position.add(originalDirection.clone().multiplyScalar(gameSpeed * deltaTime * 60));
+        } else {
+            // Normal movement when not twisting
+            bicycle.position.add(moveDirection.clone().multiplyScalar(gameSpeed * deltaTime * 60));
+        }
+        
         // Check if landed
+        const terrainHeight = getTerrainHeight(bicycle.position.x, bicycle.position.z);
         if (bicycle.position.y <= terrainHeight + 0.6 && jumpVelocity < 0) {
             isJumping = false;
             bicycle.position.y = terrainHeight + 0.6;
+            
+            // Reset twist angle when landing
+            twistAngle = 0;
+            
+            // Reset to original direction when landing
+            if (originalDirection.length() > 0) {
+                // Calculate rotation from original direction vector
+                const targetYRotation = Math.atan2(-originalDirection.x, -originalDirection.z);
+                bicycle.quaternion.identity(); // Clear all rotation
+                bicycle.rotation.y = targetYRotation; // Apply only Y rotation
+                bicycle.rotation.z = leanAngle; // Restore lean angle
+                
+                // Clear original direction
+                originalDirection.set(0, 0, 0);
+            }
         }
     } else {
-        // Normal terrain following when not jumping
-        bicycle.position.y = terrainHeight + 0.6; // 0.6 is wheel radius
+        // Check for hill crest transitions to automatically catch air
+        if (isHillCrest && gameSpeed > 0.3) {
+            // Scale jump force based on speed and hill steepness
+            const hillJumpForce = JUMP_FORCE * 
+                (gameSpeed / MAX_SPEED) * // Faster speed = higher jump
+                Math.max(0.5, Math.min(2.0, Math.abs(farHeightDifference) * 2)); // Steeper transition = higher jump
+                
+            // Start a jump from the hill crest
+            isJumping = true;
+            jumpVelocity = hillJumpForce;
+            
+            console.log(`Catching air from hill crest! Jump force: ${hillJumpForce.toFixed(2)}`);
+        } else {
+            // Apply rotation based on steering when not jumping
+            bicycle.rotation.y += steerAngle * gameSpeed;
+            
+            // Apply tilt (rotation along z-axis)
+            bicycle.rotation.z = leanAngle;
+            
+            // Apply wheelie (rotation along x-axis)
+            bicycle.rotation.x = wheelieAngle;
+            
+            // Normal terrain following when not jumping
+            const terrainHeight = getTerrainHeight(bicycle.position.x, bicycle.position.z);
+            bicycle.position.y = terrainHeight + 0.6; // 0.6 is wheel radius
+            
+            // Move bike forward
+            const currentMoveDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), bicycle.rotation.y);
+            bicycle.position.add(currentMoveDirection.multiplyScalar(gameSpeed * deltaTime * 60));
+        }
     }
     
     // Update camera to follow bicycle
     updateCameraPosition();
+}
+
+// Handle wipeout animation and respawn
+function updateWipeOutAnimation(deltaTime) {
+    wipeOutTime += deltaTime;
+    
+    // Falling backward animation (first 1 second)
+    if (wipeOutTime < 1.0) {
+        // Rotate bicycle backward
+        wheelieAngle = Math.min(wheelieAngle + deltaTime * 3, Math.PI * 0.9); // Almost fully tipped over
+        bicycle.rotation.x = wheelieAngle;
+        
+        // Slow down
+        gameSpeed = Math.max(gameSpeed - deltaTime * 2, 0);
+        
+        // Move slightly in the direction of travel
+        const moveDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), bicycle.rotation.y);
+        bicycle.position.add(moveDirection.multiplyScalar(gameSpeed * deltaTime * 30)); // Reduced movement
+    } 
+    // Start tumble animation (next 1 second)
+    else if (wipeOutTime < 2.0) {
+        // Add some random rotation for tumbling effect
+        bicycle.rotation.x += deltaTime * 5;
+        bicycle.rotation.z += deltaTime * (Math.random() - 0.5) * 2;
+        
+        // Hop up slightly then fall
+        if (wipeOutTime < 1.3) {
+            bicycle.position.y += deltaTime * 5;
+        } else {
+            bicycle.position.y -= deltaTime * 10;
+        }
+    } 
+    // Respawn after 2 seconds
+    else {
+        console.log("Crashed! Respawning...");
+        isWipingOut = false;
+        wipeOutTime = 0;
+        respawnBicycle();
+    }
+    
+    // Update camera to follow the crash
+    updateCameraPosition();
+}
+
+// Start a wipeout sequence
+function startWipeOut(reason) {
+    isWipingOut = true;
+    wipeOutTime = 0;
+    console.log(`Wiping out! Reason: ${reason}`);
 }
 
 // Get terrain height at specific x,z position
