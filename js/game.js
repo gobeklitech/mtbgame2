@@ -20,10 +20,20 @@ let collisionCooldown = 0;
 let playerScore = 0;
 let objectiveBeam = null;
 let scoreDisplay = null;
+let playerName = "Rider"; // Default player name
 
 // UI control variables
 let gameStarted = false;
 let introPopup = null;
+let loadingManager = null;
+let loadingScreen = null;
+let loadingProgressBar = null;
+let loadingProgressText = null;
+let assetsLoaded = false;
+let minimapCanvas = null;
+let minimapContext = null;
+let minimapSize = 150; // Size of the minimap in pixels
+let playerNameDisplay = null; // 3D text for player name
 
 // Physics variables
 let isJumping = false;
@@ -44,6 +54,28 @@ let wipeOutTime = 0; // Track wipeout animation time
 
 // Initialize the game
 function init() {
+    // Create loading screen first
+    createLoadingScreen();
+    
+    // Setup loading manager to track asset loading progress
+    loadingManager = new THREE.LoadingManager();
+    
+    loadingManager.onProgress = function(url, itemsLoaded, itemsTotal) {
+        const progress = itemsLoaded / itemsTotal;
+        updateLoadingProgress(progress);
+    };
+    
+    loadingManager.onLoad = function() {
+        console.log('All assets loaded');
+        assetsLoaded = true;
+        // Don't hide loading screen immediately - give a small delay for smoother transition
+        setTimeout(hideLoadingScreen, 500);
+    };
+    
+    loadingManager.onError = function(url) {
+        console.error('Error loading asset:', url);
+    };
+    
     // Create scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb); // Sky blue
@@ -96,11 +128,23 @@ function init() {
     // Create score display
     createScoreDisplay();
     
+    // Create minimap display
+    createMinimap();
+    
     // Create initial objective beam
     createObjectiveBeam();
     
-    // Show intro popup with game objectives and controls
-    createIntroPopup();
+    // Simulate loading progress for elements that don't use the loading manager
+    // This helps show the loading screen for a reasonable amount of time
+    simulateTerrainGenProgress();
+    
+    // Show intro popup with game objectives and controls after loading completes
+    const checkLoadingComplete = setInterval(() => {
+        if (assetsLoaded) {
+            promptForPlayerName();
+            clearInterval(checkLoadingComplete);
+        }
+    }, 100);
     
     // Event listeners
     window.addEventListener('resize', onWindowResize);
@@ -109,6 +153,22 @@ function init() {
     
     // Start game loop
     animate();
+}
+
+// Simulate progress for terrain generation and other non-asset operations
+function simulateTerrainGenProgress() {
+    let progress = 0;
+    const interval = setInterval(() => {
+        progress += 0.05;
+        updateLoadingProgress(Math.min(progress, 0.95)); // Cap at 95% until fully loaded
+        
+        if (progress >= 1) {
+            clearInterval(interval);
+            // Force loading complete after terrain generation is done
+            assetsLoaded = true;
+            setTimeout(hideLoadingScreen, 500);
+        }
+    }, 100);
 }
 
 // Create procedural terrain
@@ -371,60 +431,206 @@ function createBicycle() {
     // Create a group to hold all bicycle parts
     bicycle = new THREE.Group();
 
-    // Create bicycle frame (simple for now)
-    const frameGeometry = new THREE.BoxGeometry(0.8, 0.4, 2);
-    const frameMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+    // Create bicycle frame (more detailed mountain bike)
+    const frameGeometry = new THREE.BoxGeometry(0.7, 0.4, 2);
+    const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x3366cc }); // Blue mountain bike
     const frame = new THREE.Mesh(frameGeometry, frameMaterial);
     frame.position.y = 0.7;
     frame.castShadow = true;
     bicycle.add(frame);
     
+    // Create fork and suspension
+    const forkGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.8);
+    const forkMaterial = new THREE.MeshStandardMaterial({ color: 0xC0C0C0 });
+    const fork = new THREE.Mesh(forkGeometry, forkMaterial);
+    fork.position.set(0, 0.7, -0.8);
+    fork.rotation.x = Math.PI / 12; // Slight angle
+    fork.castShadow = true;
+    bicycle.add(fork);
+    
     // Create wheels
     const wheelGeometry = new THREE.TorusGeometry(0.6, 0.1, 16, 32);
     const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
+    const tireMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
     
+    // Add tire treads
+    const frontWheelGroup = new THREE.Group();
     const frontWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-    frontWheel.position.set(0, 0.6, -0.8);
     frontWheel.rotation.y = Math.PI / 2;
     frontWheel.castShadow = true;
-    bicycle.add(frontWheel);
+    frontWheelGroup.add(frontWheel);
     
+    // Add spokes
+    for (let i = 0; i < 8; i++) {
+        const spokeGeometry = new THREE.CylinderGeometry(0.01, 0.01, 1.1);
+        const spoke = new THREE.Mesh(spokeGeometry, forkMaterial);
+        spoke.rotation.z = (Math.PI / 4) * i;
+        frontWheelGroup.add(spoke);
+    }
+    
+    frontWheelGroup.position.set(0, 0.6, -0.8);
+    bicycle.add(frontWheelGroup);
+    
+    const backWheelGroup = new THREE.Group();
     const backWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-    backWheel.position.set(0, 0.6, 0.8);
     backWheel.rotation.y = Math.PI / 2;
     backWheel.castShadow = true;
-    bicycle.add(backWheel);
+    backWheelGroup.add(backWheel);
     
-    // Create handlebar
-    const handlebarGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.8);
-    const handlebarMaterial = new THREE.MeshStandardMaterial({ color: 0xC0C0C0 });
+    // Add spokes
+    for (let i = 0; i < 8; i++) {
+        const spokeGeometry = new THREE.CylinderGeometry(0.01, 0.01, 1.1);
+        const spoke = new THREE.Mesh(spokeGeometry, forkMaterial);
+        spoke.rotation.z = (Math.PI / 4) * i;
+        backWheelGroup.add(spoke);
+    }
+    
+    backWheelGroup.position.set(0, 0.6, 0.8);
+    bicycle.add(backWheelGroup);
+    
+    // Create handlebar - wider and flat for mountain bike
+    const handlebarGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.9);
+    const handlebarMaterial = new THREE.MeshStandardMaterial({ color: 0x111111 });
     const handlebar = new THREE.Mesh(handlebarGeometry, handlebarMaterial);
-    handlebar.position.set(0, 0.9, -0.8);
+    handlebar.position.set(0, 0.95, -0.8);
     handlebar.rotation.z = Math.PI / 2;
     handlebar.castShadow = true;
     bicycle.add(handlebar);
     
     // Create seat
-    const seatGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.5);
+    const seatGeometry = new THREE.BoxGeometry(0.25, 0.08, 0.4);
     const seatMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
     const seat = new THREE.Mesh(seatGeometry, seatMaterial);
     seat.position.set(0, 0.95, 0.4);
     seat.castShadow = true;
     bicycle.add(seat);
     
-    // Add a rider (simple representation)
-    const riderBodyGeometry = new THREE.CapsuleGeometry(0.25, 0.5, 4, 8);
-    const riderMaterial = new THREE.MeshStandardMaterial({ color: 0x2196F3 });
-    const riderBody = new THREE.Mesh(riderBodyGeometry, riderMaterial);
-    riderBody.position.set(0, 1.5, 0.1);
-    riderBody.castShadow = true;
-    bicycle.add(riderBody);
+    // Add a more detailed rider
+    // Create a group for the rider
+    const rider = new THREE.Group();
     
-    const headGeometry = new THREE.SphereGeometry(0.2, 16, 16);
-    const head = new THREE.Mesh(headGeometry, riderMaterial);
-    head.position.set(0, 2, 0);
-    head.castShadow = true;
-    bicycle.add(head);
+    // Colors for rider
+    const skinColor = 0xE0AC69;
+    const shirtColor = 0xFF3333; // Bright red jersey
+    const pantsColor = 0x333333; // Dark shorts/pants
+    const shoeColor = 0x222222;
+    const helmetColor = 0x222222;
+    
+    // MTB posture - leaning forward with arms extended
+    
+    // Torso - leaning forward
+    const torsoGeometry = new THREE.CapsuleGeometry(0.2, 0.5, 4, 8);
+    const torsoMaterial = new THREE.MeshStandardMaterial({ color: shirtColor });
+    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+    torso.position.set(0, 1.5, 0.1);
+    torso.rotation.x = Math.PI / 6; // Lean forward
+    torso.castShadow = true;
+    rider.add(torso);
+    
+    // Head with helmet
+    const headGroup = new THREE.Group();
+    
+    // Actual head
+    const headGeometry = new THREE.SphereGeometry(0.18, 16, 16);
+    const headMaterial = new THREE.MeshStandardMaterial({ color: skinColor });
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    headGroup.add(head);
+    
+    // Helmet
+    const helmetGeometry = new THREE.SphereGeometry(0.22, 16, 16, 0, Math.PI * 2, 0, Math.PI / 1.2);
+    const helmetMaterial = new THREE.MeshStandardMaterial({ color: helmetColor });
+    const helmet = new THREE.Mesh(helmetGeometry, helmetMaterial);
+    helmet.position.y = 0.02;
+    helmet.rotation.x = -0.2; // Tilt helmet
+    headGroup.add(helmet);
+    
+    // Visor
+    const visorGeometry = new THREE.BoxGeometry(0.3, 0.05, 0.1);
+    const visor = new THREE.Mesh(visorGeometry, helmetMaterial);
+    visor.position.set(0, 0.1, -0.2);
+    headGroup.add(visor);
+    
+    // Position head group with proper lean
+    headGroup.position.set(0, 1.9, -0.15);
+    headGroup.rotation.x = Math.PI / 6; // Match torso lean
+    rider.add(headGroup);
+    
+    // Arms - bent for riding position
+    const armMaterial = new THREE.MeshStandardMaterial({ color: shirtColor });
+    
+    // Left arm
+    const leftUpperArmGeometry = new THREE.CapsuleGeometry(0.06, 0.3, 4, 8);
+    const leftUpperArm = new THREE.Mesh(leftUpperArmGeometry, armMaterial);
+    leftUpperArm.position.set(0.3, 1.5, -0.1);
+    leftUpperArm.rotation.z = -Math.PI / 4;
+    leftUpperArm.rotation.x = Math.PI / 6;
+    rider.add(leftUpperArm);
+    
+    const leftLowerArmGeometry = new THREE.CapsuleGeometry(0.05, 0.3, 4, 8);
+    const leftLowerArm = new THREE.Mesh(leftLowerArmGeometry, armMaterial);
+    leftLowerArm.position.set(0.45, 1.25, -0.5);
+    leftLowerArm.rotation.z = -Math.PI / 8;
+    leftLowerArm.rotation.x = Math.PI / 3;
+    rider.add(leftLowerArm);
+    
+    // Right arm
+    const rightUpperArmGeometry = new THREE.CapsuleGeometry(0.06, 0.3, 4, 8);
+    const rightUpperArm = new THREE.Mesh(rightUpperArmGeometry, armMaterial);
+    rightUpperArm.position.set(-0.3, 1.5, -0.1);
+    rightUpperArm.rotation.z = Math.PI / 4;
+    rightUpperArm.rotation.x = Math.PI / 6;
+    rider.add(rightUpperArm);
+    
+    const rightLowerArmGeometry = new THREE.CapsuleGeometry(0.05, 0.3, 4, 8);
+    const rightLowerArm = new THREE.Mesh(rightLowerArmGeometry, armMaterial);
+    rightLowerArm.position.set(-0.45, 1.25, -0.5);
+    rightLowerArm.rotation.z = Math.PI / 8;
+    rightLowerArm.rotation.x = Math.PI / 3;
+    rider.add(rightLowerArm);
+    
+    // Legs - bent in riding position
+    const legMaterial = new THREE.MeshStandardMaterial({ color: pantsColor });
+    
+    // Left leg
+    const leftUpperLegGeometry = new THREE.CapsuleGeometry(0.08, 0.4, 4, 8);
+    const leftUpperLeg = new THREE.Mesh(leftUpperLegGeometry, legMaterial);
+    leftUpperLeg.position.set(0.15, 1.1, 0.3);
+    leftUpperLeg.rotation.x = -Math.PI / 6;
+    rider.add(leftUpperLeg);
+    
+    const leftLowerLegGeometry = new THREE.CapsuleGeometry(0.07, 0.4, 4, 8);
+    const leftLowerLeg = new THREE.Mesh(leftLowerLegGeometry, legMaterial);
+    leftLowerLeg.position.set(0.15, 0.75, 0.0);
+    leftLowerLeg.rotation.x = Math.PI / 3;
+    rider.add(leftLowerLeg);
+    
+    // Right leg
+    const rightUpperLegGeometry = new THREE.CapsuleGeometry(0.08, 0.4, 4, 8);
+    const rightUpperLeg = new THREE.Mesh(rightUpperLegGeometry, legMaterial);
+    rightUpperLeg.position.set(-0.15, 1.1, 0.3);
+    rightUpperLeg.rotation.x = -Math.PI / 6;
+    rider.add(rightUpperLeg);
+    
+    const rightLowerLegGeometry = new THREE.CapsuleGeometry(0.07, 0.4, 4, 8);
+    const rightLowerLeg = new THREE.Mesh(rightLowerLegGeometry, legMaterial);
+    rightLowerLeg.position.set(-0.15, 0.75, 0.0);
+    rightLowerLeg.rotation.x = Math.PI / 3;
+    rider.add(rightLowerLeg);
+    
+    // Shoes
+    const shoeGeometry = new THREE.BoxGeometry(0.1, 0.08, 0.2);
+    const shoeMaterial = new THREE.MeshStandardMaterial({ color: shoeColor });
+    
+    const leftShoe = new THREE.Mesh(shoeGeometry, shoeMaterial);
+    leftShoe.position.set(0.15, 0.5, -0.15);
+    rider.add(leftShoe);
+    
+    const rightShoe = new THREE.Mesh(shoeGeometry, shoeMaterial);
+    rightShoe.position.set(-0.15, 0.5, -0.15);
+    rider.add(rightShoe);
+    
+    // Add rider to bicycle
+    bicycle.add(rider);
     
     // Position bicycle at origin
     bicycle.position.set(0, 0, 0);
@@ -476,11 +682,37 @@ function updateCameraPosition() {
     camera.position.y = cameraY;
     camera.position.z = cameraZ;
     
-    // Look at bicycle
-    camera.lookAt(bicycle.position.x, bicycle.position.y + 1, bicycle.position.z);
+    // Check if bicycle is on a steep slope
+    // Calculate forward direction vector
+    const moveDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), bicycle.rotation.y);
     
-    // Re-enable controls
-    controls.target.set(bicycle.position.x, bicycle.position.y + 1, bicycle.position.z);
+    // Get current height and height ahead
+    const currentHeight = getTerrainHeight(bicycle.position.x, bicycle.position.z);
+    const aheadPosition = new THREE.Vector3()
+        .copy(bicycle.position)
+        .add(moveDirection.clone().multiplyScalar(2.0)); // Look 2 units ahead
+    
+    const aheadHeight = getTerrainHeight(aheadPosition.x, aheadPosition.z);
+    const heightDifference = aheadHeight - currentHeight;
+    
+    // Calculate look target with vertical adjustment based on slope
+    const lookTarget = new THREE.Vector3(bicycle.position.x, bicycle.position.y + 1, bicycle.position.z);
+    
+    if (heightDifference > 0.5) {
+        // On steep uphill - point camera up slightly
+        const slopeAngle = Math.min(heightDifference / 2, 2.0); // Cap at 2.0 units
+        lookTarget.y += slopeAngle; // Look higher based on slope steepness
+    } else if (heightDifference < -0.5) {
+        // On steep downhill - point camera down slightly (already handled by looking at bike)
+        const slopeAngle = Math.min(Math.abs(heightDifference) / 4, 1.0); // Less extreme than uphill
+        lookTarget.y -= slopeAngle * 0.5; // Look lower based on slope steepness
+    }
+    
+    // Look at the adjusted target
+    camera.lookAt(lookTarget);
+    
+    // Re-enable controls with the adjusted target
+    controls.target.copy(lookTarget);
     controls.enabled = true;
 }
 
@@ -582,9 +814,21 @@ function handleKeyUp(event) {
 
 // Update bicycle position and rotation
 function updateBicycle(deltaTime) {
-    // Don't update physics during a wipeout animation
+    // If currently wiping out, handle that instead
     if (isWipingOut) {
         updateWipeOutAnimation(deltaTime);
+        return;
+    }
+    
+    // Check if player has gone off the map boundaries
+    const terrainSize = 1000;
+    const mapBoundary = terrainSize / 2;
+    
+    if (Math.abs(bicycle.position.x) > mapBoundary || 
+        Math.abs(bicycle.position.z) > mapBoundary ||
+        bicycle.position.y < -20) { // Also check if fallen through the map
+        
+        startWipeOut("Fell off the map");
         return;
     }
     
@@ -939,6 +1183,12 @@ function animate() {
     
     // Animate objective beam
     animateObjectiveBeam(deltaTime);
+    
+    // Update minimap
+    updateMinimap();
+    
+    // Update player name position
+    updatePlayerNamePosition();
     
     // Update controls
     controls.update();
@@ -1613,7 +1863,13 @@ function createScoreDisplay() {
 }
 
 // Create objective beam at random location
-function createObjectiveBeam() {
+function createObjectiveBeam(nearPosition = null) {
+    // Store previous position if available
+    const previousPosition = objectiveBeam ? {
+        x: objectiveBeam.position.x,
+        z: objectiveBeam.position.z
+    } : null;
+    
     // Remove existing beam if it exists
     if (objectiveBeam) {
         scene.remove(objectiveBeam);
@@ -1634,13 +1890,29 @@ function createObjectiveBeam() {
     // Decide if we want a mountain peak (50% chance)
     const wantMountainPeak = Math.random() < 0.5;
     
+    // Determine search radius (smaller radius when near previous position)
+    const searchRadius = nearPosition ? 50 : boundary; // 50 units from previous position
+    
     // Keep trying until we find a valid position
     while (!validPosition && attempts < maxAttempts) {
         attempts++;
         
-        // Generate random position
-        x = (Math.random() * (boundary * 2)) - boundary;
-        z = (Math.random() * (boundary * 2)) - boundary;
+        // Generate random position, either near previous or completely random
+        if (nearPosition) {
+            // Generate position near previous beam
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 20 + Math.random() * searchRadius; // Between 20-50 units away
+            x = nearPosition.x + Math.cos(angle) * distance;
+            z = nearPosition.z + Math.sin(angle) * distance;
+            
+            // Ensure within map boundaries
+            x = Math.max(-boundary, Math.min(boundary, x));
+            z = Math.max(-boundary, Math.min(boundary, z));
+        } else {
+            // Completely random position
+            x = (Math.random() * (boundary * 2)) - boundary;
+            z = (Math.random() * (boundary * 2)) - boundary;
+        }
         
         // Get terrain height at this position
         height = getTerrainHeight(x, z);
@@ -1815,6 +2087,12 @@ function checkObjectiveCollision() {
 
 // Handle objective collection
 function collectObjective() {
+    // Store current position before removing
+    const prevPosition = {
+        x: objectiveBeam.position.x,
+        z: objectiveBeam.position.z
+    };
+    
     // Increment score
     playerScore++;
     
@@ -1823,13 +2101,13 @@ function collectObjective() {
     
     // Create collection effect (particle explosion)
     createCollectionEffect(
-        objectiveBeam.position.x,
-        getTerrainHeight(objectiveBeam.position.x, objectiveBeam.position.z) + 2,
-        objectiveBeam.position.z
+        prevPosition.x,
+        getTerrainHeight(prevPosition.x, prevPosition.z) + 2,
+        prevPosition.z
     );
     
-    // Create new objective beam at different location
-    createObjectiveBeam();
+    // Create new objective beam near the previous location
+    createObjectiveBeam(prevPosition);
 }
 
 // Create collection effect
@@ -2006,7 +2284,7 @@ function createIntroPopup() {
     
     // Add heading
     const heading = document.createElement('h1');
-    heading.textContent = 'Bicycle Game';
+    heading.textContent = 'bikeride.io';
     heading.style.color = '#00FF00';
     heading.style.marginTop = '0';
     introPopup.appendChild(heading);
@@ -2098,6 +2376,364 @@ function createIntroPopup() {
     
     // Add to document
     document.body.appendChild(introPopup);
+}
+
+// Create loading screen
+function createLoadingScreen() {
+    // Create loading overlay
+    loadingScreen = document.createElement('div');
+    loadingScreen.style.position = 'fixed';
+    loadingScreen.style.top = '0';
+    loadingScreen.style.left = '0';
+    loadingScreen.style.width = '100%';
+    loadingScreen.style.height = '100%';
+    loadingScreen.style.backgroundColor = '#000000';
+    loadingScreen.style.display = 'flex';
+    loadingScreen.style.flexDirection = 'column';
+    loadingScreen.style.justifyContent = 'center';
+    loadingScreen.style.alignItems = 'center';
+    loadingScreen.style.zIndex = '3000';
+    
+    // Create game title
+    const title = document.createElement('h1');
+    title.textContent = 'bikeride.io';
+    title.style.color = '#00FF00';
+    title.style.fontFamily = 'Arial, sans-serif';
+    title.style.fontSize = '48px';
+    title.style.marginBottom = '30px';
+    title.style.textShadow = '0 0 10px rgba(0, 255, 0, 0.7)';
+    loadingScreen.appendChild(title);
+    
+    // Create loading progress container
+    const progressContainer = document.createElement('div');
+    progressContainer.style.width = '80%';
+    progressContainer.style.maxWidth = '500px';
+    progressContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    progressContainer.style.borderRadius = '10px';
+    progressContainer.style.padding = '3px';
+    progressContainer.style.marginBottom = '20px';
+    progressContainer.style.boxShadow = '0 0 10px rgba(0, 255, 0, 0.5)';
+    
+    // Create loading progress bar
+    loadingProgressBar = document.createElement('div');
+    loadingProgressBar.style.width = '0%';
+    loadingProgressBar.style.height = '20px';
+    loadingProgressBar.style.backgroundColor = '#00FF00';
+    loadingProgressBar.style.borderRadius = '8px';
+    loadingProgressBar.style.transition = 'width 0.3s ease-in-out';
+    progressContainer.appendChild(loadingProgressBar);
+    
+    loadingScreen.appendChild(progressContainer);
+    
+    // Create loading text
+    loadingProgressText = document.createElement('div');
+    loadingProgressText.textContent = 'Loading: 0%';
+    loadingProgressText.style.color = '#FFFFFF';
+    loadingProgressText.style.fontFamily = 'Arial, sans-serif';
+    loadingProgressText.style.fontSize = '18px';
+    loadingProgressText.style.marginTop = '10px';
+    loadingScreen.appendChild(loadingProgressText);
+    
+    // Create loading animation - dots
+    const loadingDots = document.createElement('div');
+    loadingDots.style.color = '#00FF00';
+    loadingDots.style.fontFamily = 'Arial, sans-serif';
+    loadingDots.style.fontSize = '28px';
+    loadingDots.style.marginTop = '20px';
+    loadingDots.style.letterSpacing = '10px';
+    loadingScreen.appendChild(loadingDots);
+    
+    // Animate the dots
+    let dots = '';
+    setInterval(() => {
+        dots = dots.length >= 6 ? '' : dots + '.';
+        loadingDots.textContent = dots;
+    }, 300);
+    
+    // Add to document
+    document.body.appendChild(loadingScreen);
+}
+
+// Update loading progress
+function updateLoadingProgress(progress) {
+    if (loadingProgressBar && loadingProgressText) {
+        const percent = Math.round(progress * 100);
+        loadingProgressBar.style.width = `${percent}%`;
+        loadingProgressText.textContent = `Loading: ${percent}%`;
+    }
+}
+
+// Hide loading screen
+function hideLoadingScreen() {
+    if (loadingScreen) {
+        // Fade out animation
+        loadingScreen.style.transition = 'opacity 1s ease-out';
+        loadingScreen.style.opacity = '0';
+        
+        // Remove after animation completes
+        setTimeout(() => {
+            if (loadingScreen.parentNode) {
+                document.body.removeChild(loadingScreen);
+            }
+        }, 1000);
+    }
+}
+
+// Create minimap display
+function createMinimap() {
+    // Create canvas element for minimap
+    minimapCanvas = document.createElement('canvas');
+    minimapCanvas.width = minimapSize;
+    minimapCanvas.height = minimapSize;
+    minimapCanvas.style.position = 'absolute';
+    minimapCanvas.style.top = '20px';
+    minimapCanvas.style.right = '20px';
+    minimapCanvas.style.border = '3px solid rgba(0, 255, 0, 0.5)';
+    minimapCanvas.style.borderRadius = '50%';
+    minimapCanvas.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+    minimapCanvas.style.zIndex = '1000';
+    document.body.appendChild(minimapCanvas);
+    
+    // Get canvas context for drawing
+    minimapContext = minimapCanvas.getContext('2d');
+}
+
+// Update the minimap display
+function updateMinimap() {
+    if (!minimapContext || !gameStarted) return;
+    
+    // Clear the minimap
+    minimapContext.clearRect(0, 0, minimapSize, minimapSize);
+    
+    // Set terrain bounds
+    const terrainSize = 1000;
+    const scaleFactor = minimapSize / terrainSize;
+    
+    // Draw minimap background (transparent black)
+    minimapContext.beginPath();
+    minimapContext.arc(minimapSize/2, minimapSize/2, minimapSize/2, 0, Math.PI * 2);
+    minimapContext.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    minimapContext.fill();
+    
+    // Transform coordinates to center of minimap with correct scaling
+    // World coords go from -500 to 500, map to 0 to minimapSize
+    function worldToMap(x, z) {
+        return {
+            x: (x + terrainSize/2) * scaleFactor,
+            y: (z + terrainSize/2) * scaleFactor
+        };
+    }
+    
+    // Draw spawn point (yellow circle)
+    if (window.spawnPosition) {
+        const spawnPos = worldToMap(window.spawnPosition.x, window.spawnPosition.z);
+        minimapContext.beginPath();
+        minimapContext.arc(spawnPos.x, spawnPos.y, 4, 0, Math.PI * 2);
+        minimapContext.fillStyle = 'rgba(255, 215, 0, 0.8)'; // Gold
+        minimapContext.fill();
+        minimapContext.strokeStyle = 'black';
+        minimapContext.lineWidth = 1;
+        minimapContext.stroke();
+    }
+    
+    // Draw objective beam (green circle with pulse)
+    if (objectiveBeam) {
+        const beamPos = worldToMap(objectiveBeam.position.x, objectiveBeam.position.z);
+        
+        // Pulsing effect
+        const time = Date.now() * 0.001;
+        const pulseSize = 4 + Math.sin(time * 3) * 1.5;
+        
+        // Draw outer glow
+        minimapContext.beginPath();
+        minimapContext.arc(beamPos.x, beamPos.y, pulseSize + 2, 0, Math.PI * 2);
+        minimapContext.fillStyle = 'rgba(0, 255, 0, 0.3)';
+        minimapContext.fill();
+        
+        // Draw beam
+        minimapContext.beginPath();
+        minimapContext.arc(beamPos.x, beamPos.y, pulseSize, 0, Math.PI * 2);
+        minimapContext.fillStyle = 'rgba(0, 255, 0, 0.8)';
+        minimapContext.fill();
+        minimapContext.strokeStyle = 'black';
+        minimapContext.lineWidth = 1;
+        minimapContext.stroke();
+    }
+    
+    // Draw player (arrow indicating direction)
+    if (bicycle) {
+        const playerPos = worldToMap(bicycle.position.x, bicycle.position.z);
+        
+        // Draw player as a white circle
+        minimapContext.beginPath();
+        minimapContext.arc(playerPos.x, playerPos.y, 4, 0, Math.PI * 2);
+        minimapContext.fillStyle = 'white';
+        minimapContext.fill();
+        minimapContext.strokeStyle = 'black';
+        minimapContext.lineWidth = 1;
+        minimapContext.stroke();
+    }
+}
+
+// Prompt for player name
+function promptForPlayerName() {
+    // Create overlay for name prompt
+    const namePromptOverlay = document.createElement('div');
+    namePromptOverlay.style.position = 'fixed';
+    namePromptOverlay.style.top = '0';
+    namePromptOverlay.style.left = '0';
+    namePromptOverlay.style.width = '100%';
+    namePromptOverlay.style.height = '100%';
+    namePromptOverlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+    namePromptOverlay.style.display = 'flex';
+    namePromptOverlay.style.flexDirection = 'column';
+    namePromptOverlay.style.justifyContent = 'center';
+    namePromptOverlay.style.alignItems = 'center';
+    namePromptOverlay.style.zIndex = '3000';
+    
+    // Create prompt container
+    const promptContainer = document.createElement('div');
+    promptContainer.style.backgroundColor = 'rgba(0, 20, 0, 0.8)';
+    promptContainer.style.borderRadius = '10px';
+    promptContainer.style.padding = '20px 40px';
+    promptContainer.style.border = '2px solid #00FF00';
+    promptContainer.style.boxShadow = '0 0 20px rgba(0, 255, 0, 0.5)';
+    promptContainer.style.maxWidth = '400px';
+    promptContainer.style.textAlign = 'center';
+    
+    // Create title
+    const title = document.createElement('h2');
+    title.textContent = 'Enter Your Name';
+    title.style.color = '#00FF00';
+    title.style.marginBottom = '20px';
+    title.style.fontFamily = 'Arial, sans-serif';
+    promptContainer.appendChild(title);
+    
+    // Create input field
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Your Name';
+    nameInput.maxLength = 12; // Reasonable limit for display
+    nameInput.value = playerName;
+    nameInput.style.padding = '10px';
+    nameInput.style.borderRadius = '5px';
+    nameInput.style.border = '1px solid #00FF00';
+    nameInput.style.backgroundColor = 'rgba(0, 20, 0, 0.5)';
+    nameInput.style.color = '#FFFFFF';
+    nameInput.style.width = '100%';
+    nameInput.style.marginBottom = '20px';
+    nameInput.style.fontSize = '18px';
+    nameInput.style.textAlign = 'center';
+    nameInput.focus();
+    promptContainer.appendChild(nameInput);
+    
+    // Create button
+    const startButton = document.createElement('button');
+    startButton.textContent = 'Start Game';
+    startButton.style.padding = '10px 20px';
+    startButton.style.borderRadius = '5px';
+    startButton.style.border = 'none';
+    startButton.style.backgroundColor = '#00FF00';
+    startButton.style.color = '#000000';
+    startButton.style.fontSize = '18px';
+    startButton.style.cursor = 'pointer';
+    startButton.style.fontWeight = 'bold';
+    startButton.style.width = '100%';
+    startButton.style.transition = 'all 0.2s ease';
+    
+    startButton.onmouseover = function() {
+        this.style.backgroundColor = '#00CC00';
+        this.style.transform = 'scale(1.05)';
+    };
+    
+    startButton.onmouseout = function() {
+        this.style.backgroundColor = '#00FF00';
+        this.style.transform = 'scale(1)';
+    };
+    
+    startButton.onclick = function() {
+        // Save player name (with trimming and fallback to default)
+        playerName = nameInput.value.trim() || "Rider";
+        
+        // Create player name display
+        createPlayerNameDisplay();
+        
+        // Remove overlay
+        document.body.removeChild(namePromptOverlay);
+        
+        // Show intro popup
+        createIntroPopup();
+    };
+    
+    promptContainer.appendChild(startButton);
+    
+    // Handle enter key
+    nameInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            startButton.click();
+        }
+    });
+    
+    namePromptOverlay.appendChild(promptContainer);
+    document.body.appendChild(namePromptOverlay);
+}
+
+// Create player name display
+function createPlayerNameDisplay() {
+    // Create 3D text for the player's name using a sprite
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.width = 256;
+    canvas.height = 64;
+    
+    // Clear canvas
+    context.fillStyle = 'rgba(0, 0, 0, 0)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw text
+    context.font = 'bold 24px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    
+    // Add shadow
+    context.shadowColor = 'rgba(0, 0, 0, 0.7)';
+    context.shadowBlur = 4;
+    context.shadowOffsetX = 2;
+    context.shadowOffsetY = 2;
+    
+    // Draw text
+    context.fillStyle = 'white';
+    context.fillText(playerName, canvas.width / 2, canvas.height / 2);
+    
+    // Create texture from canvas
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    
+    // Create sprite material
+    const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true
+    });
+    
+    // Create sprite
+    playerNameDisplay = new THREE.Sprite(material);
+    playerNameDisplay.scale.set(2, 0.5, 1);
+    scene.add(playerNameDisplay);
+}
+
+// Update player name position
+function updatePlayerNamePosition() {
+    if (playerNameDisplay && bicycle) {
+        // Position name above the rider
+        playerNameDisplay.position.set(
+            bicycle.position.x,
+            bicycle.position.y + 2.8, // Above rider's head
+            bicycle.position.z
+        );
+        
+        // Make the text always face the camera
+        playerNameDisplay.quaternion.copy(camera.quaternion);
+    }
 }
 
 // Start the game
