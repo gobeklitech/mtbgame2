@@ -7,9 +7,9 @@ let scene, camera, renderer, clock;
 let terrain, bicycle, controls;
 let keys = { w: false, left: false, right: false, up: false, down: false, space: false, s: false, c: false };
 let gameSpeed = 0;
-const MAX_SPEED = 2.0;
+const MAX_SPEED = 3.0;
 let isSpeedCapped = true;
-let speedCap = 0.33; // One third of max speed (lowered from 1.0)
+let speedCap = 0.6;
 let steerAngle = 0;
 let leanAngle = 0;
 
@@ -127,6 +127,17 @@ function createTerrain() {
     const TRAIL_WIDTH = 15;
     const TRAIL_SMOOTHING = 25;
     
+    // Define height thresholds for different biomes
+    const SNOW_LEVEL = 45;
+    const ROCK_LEVEL = 25;
+    const FOREST_LEVEL = 15;
+    const GRASS_LEVEL = 0;
+    const SAND_LEVEL = -10;
+    const WATER_LEVEL = -20;
+    
+    // Create color array for vertices
+    const colors = new Float32Array(geometry.attributes.position.count * 3);
+    
     // Generate height map
     const vertices = geometry.attributes.position.array;
     for (let i = 0; i < vertices.length; i += 3) {
@@ -147,6 +158,19 @@ function createTerrain() {
         if (height < -10) {
             height = -10 + (height + 10) * 2; // Make low areas even lower
         }
+        
+        // Calculate slope by sampling nearby points
+        const sampleDistance = 3;
+        const hx1 = 40 * simplex.noise((x + sampleDistance) * 0.003, z * 0.003) + 
+                    15 * simplex.noise((x + sampleDistance) * 0.01, z * 0.01) +
+                    5 * simplex.noise((x + sampleDistance) * 0.05, z * 0.05);
+        const hz1 = 40 * simplex.noise(x * 0.003, (z + sampleDistance) * 0.003) + 
+                    15 * simplex.noise(x * 0.01, (z + sampleDistance) * 0.01) +
+                    5 * simplex.noise(x * 0.05, (z + sampleDistance) * 0.05);
+                    
+        const slopeX = Math.abs(height - hx1) / sampleDistance;
+        const slopeZ = Math.abs(height - hz1) / sampleDistance;
+        const slope = Math.max(slopeX, slopeZ);
         
         // Calculate distance to nearest trail
         let minTrailDistance = Infinity;
@@ -188,55 +212,92 @@ function createTerrain() {
         }
         
         vertices[i + 1] = height;
+        
+        // Determine vertex color based on height, slope, and distance to trail
+        let r, g, b;
+        
+        // Add some variation with noise
+        const colorNoise = simplex.noise(x * 0.02, z * 0.02) * 0.1;
+        
+        // On trail - use path colors
+        if (minTrailDistance < TRAIL_WIDTH) {
+            // Dirt path with some variation
+            const pathMoisture = simplex.noise(x * 0.05, z * 0.05) * 0.3 + 0.5; // 0.2 to 0.8
+            r = 0.55 + colorNoise * 0.3; // Brown-tan
+            g = 0.35 + colorNoise * 0.2 + (0.15 * (1 - pathMoisture));
+            b = 0.15 + colorNoise * 0.1 + (0.15 * (1 - pathMoisture));
+        }
+        // Snow caps
+        else if (height > SNOW_LEVEL) {
+            r = 0.95 + colorNoise;
+            g = 0.95 + colorNoise;
+            b = 0.99 + colorNoise * 0.01;
+        }
+        // Rocky areas - based on height and slope
+        else if (height > ROCK_LEVEL || slope > 0.6) {
+            // Gray rock color
+            r = 0.5 + colorNoise * 0.4;
+            g = 0.5 + colorNoise * 0.4;
+            b = 0.5 + colorNoise * 0.4;
+        }
+        // Forest
+        else if (height > FOREST_LEVEL) {
+            // Dark green
+            const forestDensity = simplex.noise(x * 0.03, z * 0.03) * 0.5 + 0.5; // 0 to 1
+            r = 0.05 + colorNoise * 0.05;
+            g = 0.35 + colorNoise * 0.1 + forestDensity * 0.05;
+            b = 0.05 + colorNoise * 0.05;
+        }
+        // Grass
+        else if (height > GRASS_LEVEL) {
+            // Varied green
+            const grassMoisture = simplex.noise(x * 0.04, z * 0.04) * 0.4 + 0.6; // 0.2 to 1
+            r = 0.15 + colorNoise * 0.05;
+            g = 0.55 + colorNoise * 0.2 * grassMoisture;
+            b = 0.1 + colorNoise * 0.05 * grassMoisture;
+        }
+        // Sand
+        else if (height > SAND_LEVEL) {
+            // Tan/beige
+            r = 0.85 + colorNoise * 0.15;
+            g = 0.8 + colorNoise * 0.1;
+            b = 0.5 + colorNoise * 0.1;
+        }
+        // Shallow water
+        else if (height > WATER_LEVEL) {
+            // Light blue/turquoise
+            const waterDepth = Math.abs((height - SAND_LEVEL) / (WATER_LEVEL - SAND_LEVEL));
+            r = 0.1 + colorNoise * 0.05;
+            g = 0.5 + colorNoise * 0.1 - (waterDepth * 0.3);
+            b = 0.8 + colorNoise * 0.2 - (waterDepth * 0.1);
+        }
+        // Deep water
+        else {
+            // Darker blue
+            const waterDepth = Math.min(1.0, Math.abs(height - WATER_LEVEL) / 10);
+            r = 0.0 + colorNoise * 0.05;
+            g = 0.2 + colorNoise * 0.05 - (waterDepth * 0.2);
+            b = 0.6 + colorNoise * 0.1 - (waterDepth * 0.2);
+        }
+        
+        // Store color in array
+        const vertexIndex = i / 3;
+        colors[vertexIndex * 3] = r;
+        colors[vertexIndex * 3 + 1] = g;
+        colors[vertexIndex * 3 + 2] = b;
     }
     
     // Need to update the normals for proper lighting
     geometry.computeVertexNormals();
     
-    // Create trail material 
-    const trailMaterial = new THREE.MeshStandardMaterial({
-        color: 0x8B4513, // Brown color for the trail
-        flatShading: true,
-    });
+    // Apply the colors to the geometry
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     
-    // Create terrain material
+    // Create vertex-colored material
     const terrainMaterial = new THREE.MeshStandardMaterial({
-        color: 0x4CAF50, // Green
-        wireframe: false,
+        vertexColors: true,
         flatShading: true,
     });
-    
-    // Create combined material array
-    const materials = [
-        terrainMaterial,
-        trailMaterial
-    ];
-    
-    // Create material index array based on trail proximity
-    const materialIndices = new Uint8Array(geometry.attributes.position.count);
-    
-    for (let i = 0; i < vertices.length / 3; i++) {
-        const x = vertices[i * 3];
-        const z = vertices[i * 3 + 2];
-        
-        // Calculate distance to nearest trail again (for material coloring)
-        let minTrailDistance = Infinity;
-        
-        trailCurves.forEach(curve => {
-            const closestPoint = closestPointOnCurve(new THREE.Vector3(x, 0, z), curve);
-            const distance = Math.sqrt(
-                Math.pow(x - closestPoint.x, 2) + 
-                Math.pow(z - closestPoint.z, 2)
-            );
-            minTrailDistance = Math.min(minTrailDistance, distance);
-        });
-        
-        // Use trail material near trails
-        materialIndices[i] = (minTrailDistance < TRAIL_WIDTH) ? 1 : 0;
-    }
-    
-    // Apply material indices
-    geometry.setAttribute('materialIndex', new THREE.BufferAttribute(materialIndices, 1));
     
     // Create merged mesh
     terrain = new THREE.Mesh(geometry, terrainMaterial);
@@ -525,8 +586,8 @@ function updateBicycle(deltaTime) {
         const effectiveMaxSpeed = isSpeedCapped ? speedCap : MAX_SPEED;
         const targetSpeed = effectiveMaxSpeed * slopeEffect;
         
-        // Significantly slower acceleration (reduced from 0.2 to 0.05)
-        const baseAcceleration = 0.05; // 4x slower acceleration than before
+        // Increased acceleration
+        const baseAcceleration = 0.08; // Faster acceleration (increased from 0.06)
         const accelerationFactor = isUphillSlope ? baseAcceleration * slopeEffect : baseAcceleration * slopeEffect;
         gameSpeed = Math.min(gameSpeed + deltaTime * accelerationFactor, targetSpeed);
     } else if (keys.s) {
