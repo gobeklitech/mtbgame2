@@ -5,11 +5,10 @@ import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
 // Main game variables
 let scene, camera, renderer, clock;
 let terrain, bicycle, controls;
-let keys = { w: false, left: false, right: false, up: false, down: false, space: false, s: false, c: false, e: false };
+let keys = { w: false, left: false, right: false, up: false, down: false, space: false, s: false, e: false };
 let gameSpeed = 0;
 const MAX_SPEED = 3.0;
-let isSpeedCapped = true;
-let speedCap = 0.6;
+const SPEED_CAP = 0.6;
 let steerAngle = 0;
 let leanAngle = 0;
 let trailCurves = []; // Added global declaration for trail curves
@@ -21,6 +20,10 @@ let collisionCooldown = 0;
 let playerScore = 0;
 let objectiveBeam = null;
 let scoreDisplay = null;
+
+// UI control variables
+let gameStarted = false;
+let introPopup = null;
 
 // Physics variables
 let isJumping = false;
@@ -95,6 +98,9 @@ function init() {
     
     // Create initial objective beam
     createObjectiveBeam();
+    
+    // Show intro popup with game objectives and controls
+    createIntroPopup();
     
     // Event listeners
     window.addEventListener('resize', onWindowResize);
@@ -487,6 +493,18 @@ function onWindowResize() {
 
 // Handle key press
 function handleKeyDown(event) {
+    // If game hasn't started yet, check for Enter key to dismiss popup
+    if (!gameStarted) {
+        if (event.key === 'Enter') {
+            // Remove popup and start game if Enter key is pressed
+            if (introPopup && introPopup.parentNode) {
+                document.body.removeChild(introPopup);
+                gameStarted = true;
+            }
+        }
+        return; // Ignore other key presses until game starts
+    }
+    
     switch(event.key) {
         case 'w':
         case 'W':
@@ -495,13 +513,6 @@ function handleKeyDown(event) {
         case 's':
         case 'S':
             keys.s = true;
-            break;
-        case 'c':
-        case 'C':
-            keys.c = true;
-            // Toggle speed cap
-            isSpeedCapped = !isSpeedCapped;
-            console.log(`Speed cap ${isSpeedCapped ? "enabled" : "disabled"}`);
             break;
         case 'r':
         case 'R':
@@ -546,10 +557,6 @@ function handleKeyUp(event) {
         case 'S':
             keys.s = false;
             break;
-        case 'c':
-        case 'C':
-            keys.c = false;
-            break;
         case 'ArrowLeft':
             keys.left = false;
             break;
@@ -578,6 +585,11 @@ function updateBicycle(deltaTime) {
     // Don't update physics during a wipeout animation
     if (isWipingOut) {
         updateWipeOutAnimation(deltaTime);
+        return;
+    }
+    
+    // If game hasn't started yet, don't update bicycle physics
+    if (!gameStarted) {
         return;
     }
     
@@ -643,9 +655,8 @@ function updateBicycle(deltaTime) {
     
     // Update speed with slope factor
     if (keys.w) {
-        // Apply speed cap if enabled, and apply slope effect
-        const effectiveMaxSpeed = isSpeedCapped ? speedCap : MAX_SPEED;
-        const targetSpeed = effectiveMaxSpeed * slopeEffect;
+        // Apply speed cap and slope effect
+        const targetSpeed = SPEED_CAP * slopeEffect;
         
         // Increased acceleration
         const baseAcceleration = 0.08; // Faster acceleration (increased from 0.06)
@@ -1617,9 +1628,16 @@ function createObjectiveBeam() {
     
     let x, z, height;
     let validPosition = false;
+    let attempts = 0;
+    const maxAttempts = 100; // Prevent infinite loops
+    
+    // Decide if we want a mountain peak (50% chance)
+    const wantMountainPeak = Math.random() < 0.5;
     
     // Keep trying until we find a valid position
-    while (!validPosition) {
+    while (!validPosition && attempts < maxAttempts) {
+        attempts++;
+        
         // Generate random position
         x = (Math.random() * (boundary * 2)) - boundary;
         z = (Math.random() * (boundary * 2)) - boundary;
@@ -1627,28 +1645,56 @@ function createObjectiveBeam() {
         // Get terrain height at this position
         height = getTerrainHeight(x, z);
         
-        // Check if this is a valid position (not in water, not too steep)
-        if (height > -10) { // Avoid water
-            // Check for obstacles
-            let tooCloseToObstacle = false;
-            
-            for (const obstacle of obstacles) {
-                const distance = Math.sqrt(
-                    Math.pow(x - obstacle.position.x, 2) + 
-                    Math.pow(z - obstacle.position.z, 2)
-                );
+        // Check if this is a valid position (not in water)
+        if (height > -10) {
+            // For mountain peaks, check if this is a suitable location
+            if (wantMountainPeak) {
+                // Sample nearby heights to check if this is a peak
+                const sampleDistance = 5;
+                const nearbyHeights = [
+                    getTerrainHeight(x + sampleDistance, z),
+                    getTerrainHeight(x - sampleDistance, z),
+                    getTerrainHeight(x, z + sampleDistance),
+                    getTerrainHeight(x, z - sampleDistance)
+                ];
                 
-                // If too close to obstacle, try again
-                if (distance < 10) {
-                    tooCloseToObstacle = true;
-                    break;
+                // Calculate if this is a peak (higher than surrounding terrain)
+                const isPeak = nearbyHeights.every(nearbyHeight => height > nearbyHeight);
+                
+                // Only accept if it's a peak and high enough
+                if (isPeak && height > 20) {
+                    validPosition = true;
+                }
+            } else {
+                // For non-peak locations, check for obstacles
+                let tooCloseToObstacle = false;
+                
+                for (const obstacle of obstacles) {
+                    const distance = Math.sqrt(
+                        Math.pow(x - obstacle.position.x, 2) + 
+                        Math.pow(z - obstacle.position.z, 2)
+                    );
+                    
+                    // If too close to obstacle, try again
+                    if (distance < 10) {
+                        tooCloseToObstacle = true;
+                        break;
+                    }
+                }
+                
+                if (!tooCloseToObstacle) {
+                    validPosition = true;
                 }
             }
-            
-            if (!tooCloseToObstacle) {
-                validPosition = true;
-            }
         }
+    }
+    
+    // If we couldn't find a valid position after max attempts, try one last time with relaxed criteria
+    if (!validPosition) {
+        console.log("Could not find ideal position, using fallback position");
+        x = (Math.random() * (boundary * 2)) - boundary;
+        z = (Math.random() * (boundary * 2)) - boundary;
+        height = getTerrainHeight(x, z);
     }
     
     // Create beam base (disc)
@@ -1938,6 +1984,120 @@ function animateObjectiveBeam(deltaTime) {
     // Pulse the light intensity
     const time = Date.now() * 0.001;
     objectiveBeam.children[4].intensity = 1 + Math.sin(time * 3) * 0.5;
+}
+
+// Create intro popup with game objectives and controls
+function createIntroPopup() {
+    // Create popup container
+    introPopup = document.createElement('div');
+    introPopup.style.position = 'absolute';
+    introPopup.style.top = '50%';
+    introPopup.style.left = '50%';
+    introPopup.style.transform = 'translate(-50%, -50%)';
+    introPopup.style.width = '500px';
+    introPopup.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+    introPopup.style.color = 'white';
+    introPopup.style.padding = '30px';
+    introPopup.style.borderRadius = '15px';
+    introPopup.style.boxShadow = '0 0 20px rgba(0, 255, 0, 0.5)';
+    introPopup.style.fontFamily = 'Arial, sans-serif';
+    introPopup.style.zIndex = '2000';
+    introPopup.style.textAlign = 'center';
+    
+    // Add heading
+    const heading = document.createElement('h1');
+    heading.textContent = 'Bicycle Game';
+    heading.style.color = '#00FF00';
+    heading.style.marginTop = '0';
+    introPopup.appendChild(heading);
+    
+    // Add objective text
+    const objective = document.createElement('p');
+    objective.textContent = 'Get to the green beams around the map to score points!';
+    objective.style.fontSize = '18px';
+    objective.style.marginBottom = '20px';
+    introPopup.appendChild(objective);
+    
+    // Add controls section
+    const controlsHeading = document.createElement('h2');
+    controlsHeading.textContent = 'Controls:';
+    controlsHeading.style.color = '#00FFFF';
+    controlsHeading.style.marginBottom = '10px';
+    introPopup.appendChild(controlsHeading);
+    
+    // Create controls list
+    const controlsList = document.createElement('div');
+    controlsList.style.textAlign = 'left';
+    controlsList.style.marginBottom = '25px';
+    controlsList.style.fontSize = '16px';
+    
+    const controls = [
+        { key: 'W', action: 'Accelerate' },
+        { key: 'S', action: 'Brake' },
+        { key: '← →', action: 'Steer' },
+        { key: 'Space', action: 'Jump' },
+        { key: '↓', action: 'Wheelie (careful, you can crash!)' },
+        { key: 'E', action: 'Barrel Roll (in the air)' },
+        { key: 'R', action: 'Respawn' }
+    ];
+    
+    controls.forEach(control => {
+        const controlItem = document.createElement('div');
+        controlItem.style.margin = '8px 0';
+        
+        const keySpan = document.createElement('span');
+        keySpan.textContent = control.key;
+        keySpan.style.display = 'inline-block';
+        keySpan.style.width = '80px';
+        keySpan.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+        keySpan.style.padding = '3px 8px';
+        keySpan.style.borderRadius = '5px';
+        keySpan.style.marginRight = '10px';
+        keySpan.style.textAlign = 'center';
+        keySpan.style.fontWeight = 'bold';
+        
+        const actionSpan = document.createElement('span');
+        actionSpan.textContent = control.action;
+        
+        controlItem.appendChild(keySpan);
+        controlItem.appendChild(actionSpan);
+        controlsList.appendChild(controlItem);
+    });
+    
+    introPopup.appendChild(controlsList);
+    
+    // Add start button
+    const startButton = document.createElement('button');
+    startButton.textContent = 'START GAME';
+    startButton.style.backgroundColor = '#00FF00';
+    startButton.style.color = 'black';
+    startButton.style.border = 'none';
+    startButton.style.padding = '12px 25px';
+    startButton.style.fontSize = '18px';
+    startButton.style.fontWeight = 'bold';
+    startButton.style.borderRadius = '8px';
+    startButton.style.cursor = 'pointer';
+    startButton.style.transition = 'all 0.2s';
+    
+    startButton.onmouseover = () => {
+        startButton.style.backgroundColor = '#FFFFFF';
+        startButton.style.transform = 'scale(1.05)';
+    };
+    
+    startButton.onmouseout = () => {
+        startButton.style.backgroundColor = '#00FF00';
+        startButton.style.transform = 'scale(1)';
+    };
+    
+    startButton.onclick = () => {
+        document.body.removeChild(introPopup);
+        gameStarted = true;
+    };
+    
+    introPopup.appendChild(startButton);
+    
+    // Add to document
+    document.body.appendChild(introPopup);
 }
 
 // Start the game
