@@ -12,6 +12,10 @@ let isSpeedCapped = true;
 let speedCap = 0.6;
 let steerAngle = 0;
 let leanAngle = 0;
+let trailCurves = []; // Added global declaration for trail curves
+let obstacles = []; // Array to track all obstacles for collision detection
+let collisionOccurred = false;
+let collisionCooldown = 0;
 
 // Physics variables
 let isJumping = false;
@@ -65,6 +69,12 @@ function init() {
     // Create procedural terrain
     createTerrain();
     
+    // Create spawn point with light beam
+    createSpawnPoint();
+    
+    // Add obstacles
+    createObstacles();
+    
     // Setup controls
     setupControls();
     
@@ -117,7 +127,7 @@ function createTerrain() {
     ];
     
     // Convert trail paths to curves for easier distance calculation
-    const trailCurves = trailPaths.map(path => {
+    trailCurves = trailPaths.map(path => {
         const curve = new THREE.CatmullRomCurve3();
         curve.points = path.map(p => new THREE.Vector3(p.x, 0, p.y));
         return curve;
@@ -475,6 +485,11 @@ function handleKeyDown(event) {
             isSpeedCapped = !isSpeedCapped;
             console.log(`Speed cap ${isSpeedCapped ? "enabled" : "disabled"}`);
             break;
+        case 'r':
+        case 'R':
+            // Respawn the bicycle
+            respawnBicycle();
+            break;
         case 'ArrowLeft':
             keys.left = true;
             break;
@@ -534,6 +549,9 @@ function handleKeyUp(event) {
 
 // Update bicycle position and rotation
 function updateBicycle(deltaTime) {
+    // Check for collisions first
+    checkCollisions();
+    
     // Calculate forward direction vector
     const moveDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), bicycle.rotation.y);
     
@@ -601,14 +619,14 @@ function updateBicycle(deltaTime) {
     }
     
     // Update steering
-    const MAX_STEER = 0.05;
+    const MAX_STEER = 0.12; // Increased from 0.05 to 0.12 (more than doubled)
     if (keys.left) {
-        steerAngle = Math.min(steerAngle + deltaTime * 0.1, MAX_STEER);
+        steerAngle = Math.min(steerAngle + deltaTime * 0.3, MAX_STEER); // Increased from 0.1 to 0.3 (3x faster)
     } else if (keys.right) {
-        steerAngle = Math.max(steerAngle - deltaTime * 0.1, -MAX_STEER);
+        steerAngle = Math.max(steerAngle - deltaTime * 0.3, -MAX_STEER); // Increased from 0.1 to 0.3 (3x faster)
     } else {
         // Return to center
-        steerAngle *= 0.9;
+        steerAngle *= 0.85; // Slower return to center (changed from 0.9 to 0.85)
     }
     
     // Update lean (tilt forward/back for normal riding)
@@ -742,6 +760,638 @@ function animate() {
     
     // Render scene
     renderer.render(scene, camera);
+}
+
+// Create obstacles around the terrain
+function createObstacles() {
+    const simplex = new SimplexNoise();
+    
+    // Create tree model function
+    function createTree(size) {
+        const tree = new THREE.Group();
+        
+        // Tree trunk
+        const trunkGeometry = new THREE.CylinderGeometry(size * 0.1, size * 0.15, size * 1.2, 8);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.castShadow = true;
+        trunk.position.y = size * 0.6;
+        tree.add(trunk);
+        
+        // Tree foliage
+        const foliageGeometry = new THREE.ConeGeometry(size * 0.6, size * 1.8, 8);
+        const foliageMaterial = new THREE.MeshStandardMaterial({ color: 0x2E8B57 });
+        const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+        foliage.castShadow = true;
+        foliage.position.y = size * 1.8;
+        tree.add(foliage);
+        
+        return tree;
+    }
+    
+    // Create rock model function
+    function createRock(size) {
+        const rock = new THREE.Group();
+        
+        // Create irregular rock shape
+        const rockGeometry = new THREE.DodecahedronGeometry(size, 1);
+        
+        // Randomly distort vertices for more natural look
+        const vertices = rockGeometry.attributes.position.array;
+        for (let i = 0; i < vertices.length; i += 3) {
+            vertices[i] += (Math.random() - 0.5) * size * 0.3;
+            vertices[i + 1] += (Math.random() - 0.5) * size * 0.3;
+            vertices[i + 2] += (Math.random() - 0.5) * size * 0.3;
+        }
+        
+        rockGeometry.computeVertexNormals();
+        
+        // Create material with slight variation in color
+        const grayValue = 0.4 + Math.random() * 0.3;
+        const rockMaterial = new THREE.MeshStandardMaterial({ 
+            color: new THREE.Color(grayValue, grayValue, grayValue),
+            flatShading: true
+        });
+        
+        const rockMesh = new THREE.Mesh(rockGeometry, rockMaterial);
+        rockMesh.castShadow = true;
+        rock.add(rockMesh);
+        
+        return rock;
+    }
+    
+    // Create ramp model function
+    function createRamp(width, height, depth) {
+        const ramp = new THREE.Group();
+        
+        // Create ramp geometry (custom shape)
+        const rampShape = new THREE.Shape();
+        rampShape.moveTo(0, 0);
+        rampShape.lineTo(depth, height);
+        rampShape.lineTo(depth, 0);
+        rampShape.lineTo(0, 0);
+        
+        const extrudeSettings = {
+            steps: 1,
+            depth: width,
+            bevelEnabled: false
+        };
+        
+        const rampGeometry = new THREE.ExtrudeGeometry(rampShape, extrudeSettings);
+        rampGeometry.rotateX(Math.PI / 2);
+        rampGeometry.rotateY(Math.PI);
+        
+        const rampMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const rampMesh = new THREE.Mesh(rampGeometry, rampMaterial);
+        rampMesh.castShadow = true;
+        rampMesh.receiveShadow = true;
+        
+        ramp.add(rampMesh);
+        
+        return ramp;
+    }
+    
+    // Create log model function
+    function createLog(length, radius) {
+        const log = new THREE.Group();
+        
+        // Create log geometry
+        const logGeometry = new THREE.CylinderGeometry(radius, radius, length, 8);
+        logGeometry.rotateZ(Math.PI / 2);
+        
+        const logMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            flatShading: true
+        });
+        
+        const logMesh = new THREE.Mesh(logGeometry, logMaterial);
+        logMesh.castShadow = true;
+        log.add(logMesh);
+        
+        return log;
+    }
+    
+    // Define terrain boundaries
+    const terrainSize = 1000;
+    const boundary = terrainSize / 2;
+    
+    // Place trees in forest areas (increased from 2500 to 25000)
+    for (let i = 0; i < 25000; i++) {
+        // Random position within terrain bounds
+        const x = (Math.random() * terrainSize) - boundary;
+        const z = (Math.random() * terrainSize) - boundary;
+        
+        // Get terrain height at this position
+        const height = getTerrainHeight(x, z);
+        
+        // Only place trees in forest areas (between 15 and 25 units elevation)
+        if (height > 15 && height < 25) {
+            // Use simplex noise to cluster trees naturally
+            const noiseValue = simplex.noise(x * 0.01, z * 0.01);
+            
+            // Only place trees where noise value is positive (creates natural clearings)
+            if (noiseValue > 0) {
+                const size = 1.5 + Math.random() * 2; // Random tree size
+                const tree = createTree(size);
+                
+                // Position tree on terrain
+                tree.position.set(x, height, z);
+                
+                // Random rotation
+                tree.rotation.y = Math.random() * Math.PI * 2;
+                
+                // Add collision data
+                tree.userData.type = 'tree';
+                tree.userData.collisionRadius = size * 0.5;
+                
+                // Add to scene and obstacles array
+                scene.add(tree);
+                obstacles.push(tree);
+            }
+        }
+    }
+    
+    // Place rocks in rocky areas (increased from 1500 to 15000)
+    for (let i = 0; i < 15000; i++) {
+        // Random position within terrain bounds
+        const x = (Math.random() * terrainSize) - boundary;
+        const z = (Math.random() * terrainSize) - boundary;
+        
+        // Get terrain height and slope at this position
+        const height = getTerrainHeight(x, z);
+        
+        // Calculate approximate slope by sampling nearby points
+        const sampleDistance = 3;
+        const heightNearby = getTerrainHeight(x + sampleDistance, z);
+        const slope = Math.abs(height - heightNearby) / sampleDistance;
+        
+        // Place rocks on high elevations or steep slopes
+        if (height > 25 || slope > 0.6) {
+            const size = 0.8 + Math.random() * 1.5; // Random rock size
+            const rock = createRock(size);
+            
+            // Position rock on terrain
+            rock.position.set(x, height, z);
+            
+            // Random rotation
+            rock.rotation.y = Math.random() * Math.PI * 2;
+            
+            // Add collision data
+            rock.userData.type = 'rock';
+            rock.userData.collisionRadius = size * 0.8;
+            
+            // Add to scene and obstacles array
+            scene.add(rock);
+            obstacles.push(rock);
+        }
+    }
+    
+    // Place ramps along trails - procedurally generate 400 ramps (increased from 40)
+    // Keep original ramps
+    const rampLocations = [
+        { x: -150, z: 120, rotation: Math.PI / 4 },
+        { x: 200, z: -50, rotation: Math.PI / -2 },
+        { x: -50, z: -200, rotation: Math.PI * 1.25 },
+        { x: 150, z: 150, rotation: Math.PI / 2 },
+    ];
+    
+    // Generate additional ramps along terrain using noise-based placement
+    for (let i = 0; i < 396; i++) { // 396 more ramps for a total of 400
+        // Place ramps along area where trails are likely to be (mid elevations)
+        // Try to find suitable locations by testing random spots
+        let attempts = 0;
+        let placed = false;
+        
+        while (!placed && attempts < 20) {
+            attempts++;
+            
+            // Generate random position
+            const x = (Math.random() * terrainSize) - boundary;
+            const z = (Math.random() * terrainSize) - boundary;
+            
+            // Get height at this position
+            const height = getTerrainHeight(x, z);
+            
+            // Check if this is a good position for a ramp (mid elevations where trails might be)
+            if (height > 5 && height < 30) {
+                // Use simplex noise to create some clustering
+                const noiseValue = simplex.noise(x * 0.02, z * 0.02);
+                
+                if (noiseValue > 0.2) {
+                    rampLocations.push({
+                        x: x,
+                        z: z,
+                        rotation: Math.random() * Math.PI * 2, // Random rotation
+                    });
+                    placed = true;
+                }
+            }
+        }
+    }
+    
+    // Create all ramps
+    rampLocations.forEach(location => {
+        const height = getTerrainHeight(location.x, location.z);
+        // Vary ramp sizes
+        const width = 2 + Math.random() * 2;
+        const rampHeight = 1 + Math.random();
+        const depth = 4 + Math.random() * 3;
+        
+        const ramp = createRamp(width, rampHeight, depth);
+        
+        // Position ramp on terrain
+        ramp.position.set(location.x, height, location.z);
+        ramp.rotation.y = location.rotation;
+        
+        // Add collision data (for ramps, we'll do special handling during jumps)
+        ramp.userData.type = 'ramp';
+        ramp.userData.collisionRadius = width * 0.7;
+        ramp.userData.rampParams = { width, height: rampHeight, depth };
+        
+        // Add to scene and obstacles array
+        scene.add(ramp);
+        obstacles.push(ramp);
+    });
+    
+    // Place fallen logs as obstacles - Original 3 plus 297 more for a total of 300
+    const logLocations = [
+        { x: -220, z: 80, rotation: Math.PI / 6, length: 8 },
+        { x: 120, z: -180, rotation: Math.PI / -3, length: 6 },
+        { x: 30, z: 240, rotation: Math.PI / 2, length: 7 },
+    ];
+    
+    // Generate additional logs distributed across the terrain
+    for (let i = 0; i < 297; i++) { // 297 more logs for a total of 300
+        // Place logs in various locations for challenging obstacles
+        const x = (Math.random() * terrainSize) - boundary;
+        const z = (Math.random() * terrainSize) - boundary;
+        const height = getTerrainHeight(x, z);
+        
+        // Logs look good on trails and moderate terrain
+        if (height > -5 && height < 30) {
+            logLocations.push({
+                x: x,
+                z: z,
+                rotation: Math.random() * Math.PI, // Random rotation
+                length: 4 + Math.random() * 6 // Various lengths 4-10
+            });
+        }
+    }
+    
+    // Create all logs
+    logLocations.forEach(location => {
+        const height = getTerrainHeight(location.x, location.z);
+        const radius = 0.3 + Math.random() * 0.4; // Various thicknesses
+        const log = createLog(location.length, radius);
+        
+        // Position log on terrain
+        log.position.set(location.x, height + radius, location.z);
+        log.rotation.y = location.rotation;
+        
+        // Add collision data
+        log.userData.type = 'log';
+        log.userData.collisionRadius = radius * 1.5;
+        log.userData.length = location.length;
+        log.userData.direction = new THREE.Vector2(
+            Math.cos(location.rotation),
+            Math.sin(location.rotation)
+        );
+        
+        // Add to scene and obstacles array
+        scene.add(log);
+        obstacles.push(log);
+    });
+}
+
+// Create a spawn point with a beam of light
+function createSpawnPoint() {
+    // Get the starting point of the main trail
+    const spawnCurve = trailCurves[0];
+    const spawnPoint = spawnCurve.getPoint(0);
+    const spawnHeight = getTerrainHeight(spawnPoint.x, spawnPoint.z);
+    
+    // Create a platform at the spawn point
+    const platformGeometry = new THREE.CylinderGeometry(5, 6, 0.5, 16);
+    const platformMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0xFFD700, // Gold color
+        metalness: 0.7,
+        roughness: 0.3,
+        emissive: 0x996515,
+        emissiveIntensity: 0.3
+    });
+    const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+    platform.position.set(spawnPoint.x, spawnHeight + 0.25, spawnPoint.z);
+    platform.receiveShadow = true;
+    scene.add(platform);
+    
+    // Create outer ring
+    const ringGeometry = new THREE.TorusGeometry(5.5, 0.3, 16, 32);
+    const ringMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00FFFF, // Cyan
+        emissive: 0x00FFFF,
+        emissiveIntensity: 0.7,
+        transparent: true,
+        opacity: 0.8
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.position.set(spawnPoint.x, spawnHeight + 0.7, spawnPoint.z);
+    ring.rotation.x = Math.PI / 2;
+    scene.add(ring);
+    
+    // Create beam of light (using cylinder with transparent material)
+    const beamGeometry = new THREE.CylinderGeometry(1, 3, 100, 16, 10, true);
+    const beamMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFFFFFF,
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide
+    });
+    const beam = new THREE.Mesh(beamGeometry, beamMaterial);
+    beam.position.set(spawnPoint.x, spawnHeight + 50, spawnPoint.z);
+    scene.add(beam);
+    
+    // Add particles inside the beam for more effect
+    const particleGeometry = new THREE.BufferGeometry();
+    const particleCount = 500;
+    const particlePositions = new Float32Array(particleCount * 3);
+    
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * 2;
+        const height = Math.random() * 100;
+        
+        particlePositions[i3] = Math.cos(angle) * radius + spawnPoint.x;
+        particlePositions[i3 + 1] = height + spawnHeight;
+        particlePositions[i3 + 2] = Math.sin(angle) * radius + spawnPoint.z;
+    }
+    
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    
+    const particleMaterial = new THREE.PointsMaterial({
+        color: 0xFFFFFF,
+        size: 0.3,
+        transparent: true,
+        opacity: 0.8
+    });
+    
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+    
+    // Add point light in the center of the beam
+    const pointLight = new THREE.PointLight(0xFFFFFF, 1, 50);
+    pointLight.position.set(spawnPoint.x, spawnHeight + 3, spawnPoint.z);
+    scene.add(pointLight);
+    
+    // Add animation for the beam and ring
+    function animateSpawnPoint() {
+        // Make the ring rotate
+        ring.rotation.z += 0.01;
+        
+        // Animate particles
+        const positions = particles.geometry.attributes.position.array;
+        for (let i = 0; i < particleCount; i++) {
+            const i3 = i * 3;
+            positions[i3 + 1] += 0.1; // Move particles upward
+            
+            // Reset particles that go too high
+            if (positions[i3 + 1] > spawnHeight + 100) {
+                positions[i3 + 1] = spawnHeight;
+            }
+        }
+        particles.geometry.attributes.position.needsUpdate = true;
+        
+        // Pulse the light intensity
+        const time = Date.now() * 0.001;
+        pointLight.intensity = 1 + Math.sin(time * 2) * 0.5;
+        
+        requestAnimationFrame(animateSpawnPoint);
+    }
+    
+    // Start the animation
+    animateSpawnPoint();
+    
+    // Store spawn point information globally for respawn functionality
+    window.spawnPosition = {
+        x: spawnPoint.x,
+        y: spawnHeight + 0.6, // Adjust for bicycle wheel height
+        z: spawnPoint.z
+    };
+}
+
+// Add respawn function to reset bicycle to spawn point
+function respawnBicycle() {
+    if (window.spawnPosition) {
+        // Reset bicycle position to spawn point
+        bicycle.position.set(
+            window.spawnPosition.x,
+            window.spawnPosition.y,
+            window.spawnPosition.z
+        );
+        
+        // Reset bicycle rotation and physics
+        bicycle.rotation.set(0, 0, 0);
+        gameSpeed = 0;
+        isJumping = false;
+        jumpVelocity = 0;
+        isWheelieMode = false;
+        wheelieAngle = 0;
+        steerAngle = 0;
+        leanAngle = 0;
+        
+        // Update camera
+        updateCameraPosition();
+    }
+}
+
+// Check for collisions between bicycle and obstacles
+function checkCollisions() {
+    if (collisionCooldown > 0) {
+        collisionCooldown -= clock.getDelta();
+        return false;
+    }
+    
+    // Get bicycle position and create bounding circle
+    const bicyclePosition = new THREE.Vector2(bicycle.position.x, bicycle.position.z);
+    const bicycleRadius = 1.0; // Approximate radius of the bicycle
+    
+    // Check against all obstacles
+    for (const obstacle of obstacles) {
+        // Only check obstacles within a reasonable distance
+        const obstaclePosition = new THREE.Vector2(obstacle.position.x, obstacle.position.z);
+        const distance = bicyclePosition.distanceTo(obstaclePosition);
+        
+        // Quick distance check before detailed collision
+        if (distance > 20) continue;
+        
+        // Get collision data from obstacle
+        const collisionRadius = obstacle.userData.collisionRadius || 1.0;
+        
+        // Special handling for different obstacle types
+        switch (obstacle.userData.type) {
+            case 'tree':
+            case 'rock':
+                // Simple circle-circle collision
+                if (distance < bicycleRadius + collisionRadius) {
+                    // Create collision response
+                    handleCollision(obstacle);
+                    return true;
+                }
+                break;
+                
+            case 'log':
+                // For logs, check distance to the line segment
+                // Get log direction and length
+                const logDirection = obstacle.userData.direction;
+                const logLength = obstacle.userData.length;
+                
+                // Log endpoints
+                const logStart = new THREE.Vector2(
+                    obstacle.position.x - logDirection.x * logLength/2,
+                    obstacle.position.z - logDirection.y * logLength/2
+                );
+                const logEnd = new THREE.Vector2(
+                    obstacle.position.x + logDirection.x * logLength/2,
+                    obstacle.position.z + logDirection.y * logLength/2
+                );
+                
+                // Calculate distance from bicycle to log line segment
+                const distToLog = distanceToLineSegment(
+                    bicyclePosition, 
+                    logStart, 
+                    logEnd
+                );
+                
+                if (distToLog < bicycleRadius + collisionRadius) {
+                    handleCollision(obstacle);
+                    return true;
+                }
+                break;
+                
+            case 'ramp':
+                // Ramps can be jumped over if the bicycle is in the air
+                if (isJumping) {
+                    // No collision when jumping
+                    break;
+                }
+                
+                // Check circle collision when not jumping
+                if (distance < bicycleRadius + collisionRadius) {
+                    // For ramps, we'll apply a different effect - slow down but allow passage
+                    gameSpeed *= 0.5;
+                    return false;
+                }
+                break;
+        }
+    }
+    
+    return false;
+}
+
+// Helper function to calculate distance from point to line segment
+function distanceToLineSegment(point, lineStart, lineEnd) {
+    const line = new THREE.Vector2().subVectors(lineEnd, lineStart);
+    const pointToLineStart = new THREE.Vector2().subVectors(point, lineStart);
+    
+    // Calculate projection
+    const lineLength = line.length();
+    const lineDirection = line.clone().normalize();
+    const projection = pointToLineStart.dot(lineDirection);
+    
+    // Check if projection is outside line segment
+    if (projection <= 0) {
+        return pointToLineStart.length();
+    } else if (projection >= lineLength) {
+        return new THREE.Vector2().subVectors(point, lineEnd).length();
+    }
+    
+    // Calculate perpendicular distance
+    const projectionPoint = lineStart.clone().add(
+        lineDirection.clone().multiplyScalar(projection)
+    );
+    return new THREE.Vector2().subVectors(point, projectionPoint).length();
+}
+
+// Handle collision response
+function handleCollision(obstacle) {
+    if (collisionOccurred) return;
+    
+    collisionOccurred = true;
+    collisionCooldown = 1.5; // Increased from 1.0 to 1.5 seconds
+    
+    // Calculate collision response
+    const pushDirection = new THREE.Vector2(
+        bicycle.position.x - obstacle.position.x,
+        bicycle.position.z - obstacle.position.z
+    ).normalize();
+    
+    // Calculate impact velocity based on current speed
+    const impactForce = gameSpeed * 5; // Scale based on current speed
+    
+    // Apply effects based on collision type
+    switch (obstacle.userData.type) {
+        case 'tree':
+            // Hard stop when hitting a tree
+            gameSpeed = 0;
+            
+            // Strong pushback based on current speed
+            bicycle.position.x += pushDirection.x * 3.0; // Increased from 1.5 to 3.0
+            bicycle.position.z += pushDirection.y * 3.0; // Increased from 1.5 to 3.0
+            
+            // Add rotational impact - random tilt based on impact
+            bicycle.rotation.z += (Math.random() - 0.5) * 0.5;
+            
+            // Add a strong bounce
+            if (!isJumping) {
+                isJumping = true;
+                jumpVelocity = JUMP_FORCE * 0.8;
+            }
+            break;
+            
+        case 'rock':
+            // Much stronger speed reduction
+            gameSpeed *= 0.1; // Reduced from 0.2 to 0.1 (90% reduction)
+            
+            // Stronger pushback
+            bicycle.position.x += pushDirection.x * 2.5; // Increased from 1.0 to 2.5
+            bicycle.position.z += pushDirection.y * 2.5; // Increased from 1.0 to 2.5
+            
+            // Add rotational impact - smaller tilt
+            bicycle.rotation.z += (Math.random() - 0.5) * 0.3;
+            
+            // Medium bounce
+            if (!isJumping) {
+                isJumping = true;
+                jumpVelocity = JUMP_FORCE * 0.6;
+            }
+            break;
+            
+        case 'log':
+            // Stronger speed reduction
+            gameSpeed *= 0.2; // Reduced from 0.4 to 0.2 (80% reduction)
+            
+            // Add pushback (was missing before)
+            bicycle.position.x += pushDirection.x * 1.5;
+            bicycle.position.z += pushDirection.y * 1.5;
+            
+            // Add rotational impact - wheelie effect
+            bicycle.rotation.x += 0.2; // Forward tilt
+            
+            // Stronger bounce
+            if (!isJumping) {
+                isJumping = true;
+                jumpVelocity = JUMP_FORCE * 0.7; // Increased from 0.5 to 0.7
+            }
+            break;
+    }
+    
+    // Play collision sound or effect (could be added later)
+    console.log(`Strong collision with ${obstacle.userData.type}! Impact force: ${impactForce.toFixed(2)}`);
+    
+    // Reset collision flag after cooldown
+    setTimeout(() => {
+        collisionOccurred = false;
+    }, 500);
 }
 
 // Start the game
