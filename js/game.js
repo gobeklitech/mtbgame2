@@ -59,11 +59,11 @@ function init() {
     directionalLight.shadow.camera.bottom = -500;
     scene.add(directionalLight);
     
+    // Create bicycle first
+    createBicycle();
+    
     // Create procedural terrain
     createTerrain();
-    
-    // Create bicycle
-    createBicycle();
     
     // Setup controls
     setupControls();
@@ -83,18 +83,109 @@ function createTerrain() {
     const geometry = new THREE.PlaneGeometry(1000, 1000, 200, 200);
     geometry.rotateX(-Math.PI / 2);
     
+    // Define trail paths using bezier curves
+    // Each path is defined as a series of control points for a bezier curve
+    const trailPaths = [
+        // Main circular trail loop
+        [
+            new THREE.Vector2(-300, 0),
+            new THREE.Vector2(-250, 200),
+            new THREE.Vector2(0, 250),
+            new THREE.Vector2(250, 200),
+            new THREE.Vector2(300, 0),
+            new THREE.Vector2(250, -200),
+            new THREE.Vector2(0, -250),
+            new THREE.Vector2(-250, -200),
+            new THREE.Vector2(-300, 0)
+        ],
+        // Cross trail 1 (East-West)
+        [
+            new THREE.Vector2(-400, 100),
+            new THREE.Vector2(-200, 120),
+            new THREE.Vector2(0, 100),
+            new THREE.Vector2(200, 80),
+            new THREE.Vector2(400, 100)
+        ],
+        // Cross trail 2 (North-South)
+        [
+            new THREE.Vector2(100, 400),
+            new THREE.Vector2(80, 200),
+            new THREE.Vector2(100, 0),
+            new THREE.Vector2(120, -200),
+            new THREE.Vector2(100, -400)
+        ]
+    ];
+    
+    // Convert trail paths to curves for easier distance calculation
+    const trailCurves = trailPaths.map(path => {
+        const curve = new THREE.CatmullRomCurve3();
+        curve.points = path.map(p => new THREE.Vector3(p.x, 0, p.y));
+        return curve;
+    });
+    
+    // Define trail width and influence
+    const TRAIL_WIDTH = 15;
+    const TRAIL_SMOOTHING = 25;
+    
     // Generate height map
     const vertices = geometry.attributes.position.array;
     for (let i = 0; i < vertices.length; i += 3) {
         const x = vertices[i];
         const z = vertices[i + 2];
         
-        // Generate height based on simplex noise
-        // Different frequencies for different levels of detail
-        const height = 
-            20 * simplex.noise(x * 0.005, z * 0.005) + 
-            8 * simplex.noise(x * 0.02, z * 0.02) +
-            2 * simplex.noise(x * 0.05, z * 0.05);
+        // Generate base extreme height using simplex noise
+        // Increased amplitude for more dramatic terrain
+        let height = 
+            40 * simplex.noise(x * 0.003, z * 0.003) + // Large scale mountains (increased amplitude)
+            15 * simplex.noise(x * 0.01, z * 0.01) +   // Medium details
+            5 * simplex.noise(x * 0.05, z * 0.05);     // Small details
+        
+        // Make extreme cliffs at certain thresholds
+        if (height > 20) {
+            height = 20 + (height - 20) * 2; // Make high areas even higher
+        }
+        if (height < -10) {
+            height = -10 + (height + 10) * 2; // Make low areas even lower
+        }
+        
+        // Calculate distance to nearest trail
+        let minTrailDistance = Infinity;
+        let nearestTrailHeight = 0;
+        
+        trailCurves.forEach((curve, index) => {
+            // Find the closest point on the curve to this vertex
+            const closestPoint = closestPointOnCurve(new THREE.Vector3(x, 0, z), curve);
+            const distance = Math.sqrt(
+                Math.pow(x - closestPoint.x, 2) + 
+                Math.pow(z - closestPoint.z, 2)
+            );
+            
+            // If this is closer than previous trails, update min distance
+            if (distance < minTrailDistance) {
+                minTrailDistance = distance;
+                
+                // Generate trail height based on path position (gently following terrain)
+                const baseTrailNoise = 
+                    8 * simplex.noise(closestPoint.x * 0.005, closestPoint.z * 0.005) + 
+                    2 * simplex.noise(closestPoint.x * 0.02, closestPoint.z * 0.02);
+                
+                // Add gentle slope along trail length for variety
+                const t = curve.getUtoTmapping(closestPoint.u);
+                const pathVariation = Math.sin(t * Math.PI * 4) * 3;
+                
+                nearestTrailHeight = baseTrailNoise + pathVariation;
+            }
+        });
+        
+        // Apply trail deformation to terrain
+        if (minTrailDistance < TRAIL_WIDTH) {
+            // On the trail - flatten completely
+            height = nearestTrailHeight;
+        } else if (minTrailDistance < TRAIL_WIDTH + TRAIL_SMOOTHING) {
+            // Transition zone - blend between trail and terrain
+            const blend = (minTrailDistance - TRAIL_WIDTH) / TRAIL_SMOOTHING;
+            height = nearestTrailHeight * (1 - blend) + height * blend;
+        }
         
         vertices[i + 1] = height;
     }
@@ -102,16 +193,82 @@ function createTerrain() {
     // Need to update the normals for proper lighting
     geometry.computeVertexNormals();
     
-    // Create material and mesh
-    const material = new THREE.MeshStandardMaterial({
-        color: 0x4CAF50,
+    // Create trail material 
+    const trailMaterial = new THREE.MeshStandardMaterial({
+        color: 0x8B4513, // Brown color for the trail
+        flatShading: true,
+    });
+    
+    // Create terrain material
+    const terrainMaterial = new THREE.MeshStandardMaterial({
+        color: 0x4CAF50, // Green
         wireframe: false,
         flatShading: true,
     });
     
-    terrain = new THREE.Mesh(geometry, material);
+    // Create combined material array
+    const materials = [
+        terrainMaterial,
+        trailMaterial
+    ];
+    
+    // Create material index array based on trail proximity
+    const materialIndices = new Uint8Array(geometry.attributes.position.count);
+    
+    for (let i = 0; i < vertices.length / 3; i++) {
+        const x = vertices[i * 3];
+        const z = vertices[i * 3 + 2];
+        
+        // Calculate distance to nearest trail again (for material coloring)
+        let minTrailDistance = Infinity;
+        
+        trailCurves.forEach(curve => {
+            const closestPoint = closestPointOnCurve(new THREE.Vector3(x, 0, z), curve);
+            const distance = Math.sqrt(
+                Math.pow(x - closestPoint.x, 2) + 
+                Math.pow(z - closestPoint.z, 2)
+            );
+            minTrailDistance = Math.min(minTrailDistance, distance);
+        });
+        
+        // Use trail material near trails
+        materialIndices[i] = (minTrailDistance < TRAIL_WIDTH) ? 1 : 0;
+    }
+    
+    // Apply material indices
+    geometry.setAttribute('materialIndex', new THREE.BufferAttribute(materialIndices, 1));
+    
+    // Create merged mesh
+    terrain = new THREE.Mesh(geometry, terrainMaterial);
     terrain.receiveShadow = true;
     scene.add(terrain);
+    
+    // Set the player at the starting point of the main trail
+    const startingPoint = trailCurves[0].getPoint(0);
+    bicycle.position.set(startingPoint.x, 0, startingPoint.z);
+}
+
+// Helper function to find closest point on a curve to a target point
+function closestPointOnCurve(target, curve, subdivisions = 200) {
+    let minDistance = Infinity;
+    let closestPoint = null;
+    let closestU = 0;
+    
+    for (let i = 0; i <= subdivisions; i++) {
+        const u = i / subdivisions;
+        const point = curve.getPoint(u);
+        const distance = target.distanceTo(point);
+        
+        if (distance < minDistance) {
+            minDistance = distance;
+            closestPoint = point;
+            closestU = u;
+        }
+    }
+    
+    // Add u parameter to the point for later use
+    closestPoint.u = closestU;
+    return closestPoint;
 }
 
 // Create bicycle model

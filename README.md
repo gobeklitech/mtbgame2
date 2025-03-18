@@ -32,15 +32,17 @@ A basic open-world Three.js game with procedurally generated terrain featuring a
 
 ## Features
 
-- Massive procedurally generated terrain (1000x1000 units)
-- Enhanced terrain elevation with multi-octave noise
+- Extreme procedurally generated mountain terrain (1000x1000 units)
+  - Dramatic cliffs and elevation changes
+  - Network of navigable trail paths
+  - Challenging off-trail exploration
 - Advanced slope-based physics system:
   - Steep uphills dramatically slow the bicycle (up to 95% reduction)
   - Downhills provide speed boosts (up to 40% increase)
   - Harder braking on downhill sections
   - Realistic coasting on slopes
 - Realistic acceleration physics (slow build-up of speed)
-- Camera that follows the bicycle
+- Camera that follows the bicycle and adapts to terrain
 - Jump and wheelie mechanics for stunts
 - Togglable speed cap for controlled riding
 
@@ -51,10 +53,12 @@ This game uses:
 - Vite for bundling and development
 - SimplexNoise for terrain generation
 - OrbitControls for camera management
+- Bezier curves for trail path generation
 
 ## Development
 
 To modify the game:
 - Edit `js/game.js` to change game mechanics
 - Adjust terrain generation parameters in the `createTerrain()` function
-- Modify the bicycle model in the `createBicycle()` function 
+- Modify bicycle model in the `createBicycle()` function
+- Edit trail paths in the `trailPaths` array 
