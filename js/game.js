@@ -17,11 +17,17 @@ let obstacles = []; // Array to track all obstacles for collision detection
 let collisionOccurred = false;
 let collisionCooldown = 0;
 
+// Scoring system variables
+let playerScore = 0;
+let objectiveBeam = null;
+let scoreDisplay = null;
+
 // Physics variables
 let isJumping = false;
 let jumpVelocity = 0;
 const JUMP_FORCE = 0.5;
 const GRAVITY = 0.02;
+const BRAKE_FORCE = 0.2; // Added missing brake force constant
 let isWheelieMode = false;
 let wheelieAngle = 0;
 const MAX_SAFE_WHEELIE_ANGLE = Math.PI / 6; // 30 degrees - safe threshold
@@ -83,6 +89,12 @@ function init() {
     
     // Setup controls
     setupControls();
+    
+    // Create score display
+    createScoreDisplay();
+    
+    // Create initial objective beam
+    createObjectiveBeam();
     
     // Event listeners
     window.addEventListener('resize', onWindowResize);
@@ -911,6 +923,12 @@ function animate() {
     // Update bicycle
     updateBicycle(deltaTime);
     
+    // Check for objective collection
+    checkObjectiveCollision();
+    
+    // Animate objective beam
+    animateObjectiveBeam(deltaTime);
+    
     // Update controls
     controls.update();
     
@@ -1355,8 +1373,14 @@ function respawnBicycle() {
         steerAngle = 0;
         leanAngle = 0;
         
+        // Reset player score to 0
+        playerScore = 0;
+        updateScoreDisplay();
+        
         // Update camera
         updateCameraPosition();
+        
+        console.log("Player respawned at start. Score reset to 0.");
     }
 }
 
@@ -1548,6 +1572,372 @@ function handleCollision(obstacle) {
     setTimeout(() => {
         collisionOccurred = false;
     }, 500);
+}
+
+// Create score display
+function createScoreDisplay() {
+    // Create a container div for the score
+    const scoreContainer = document.createElement('div');
+    scoreContainer.style.position = 'absolute';
+    scoreContainer.style.top = '20px';
+    scoreContainer.style.left = '20px';
+    scoreContainer.style.padding = '10px 20px';
+    scoreContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    scoreContainer.style.color = 'white';
+    scoreContainer.style.borderRadius = '10px';
+    scoreContainer.style.fontFamily = 'Arial, sans-serif';
+    scoreContainer.style.fontSize = '24px';
+    scoreContainer.style.fontWeight = 'bold';
+    scoreContainer.style.userSelect = 'none';
+    scoreContainer.style.zIndex = '1000';
+    
+    // Set initial score text
+    scoreContainer.textContent = 'Score: 0';
+    
+    // Add to document
+    document.body.appendChild(scoreContainer);
+    
+    // Store reference
+    scoreDisplay = scoreContainer;
+}
+
+// Create objective beam at random location
+function createObjectiveBeam() {
+    // Remove existing beam if it exists
+    if (objectiveBeam) {
+        scene.remove(objectiveBeam);
+    }
+    
+    // Create a group for the beam
+    objectiveBeam = new THREE.Group();
+    
+    // Generate random position within the terrain bounds
+    const terrainSize = 1000;
+    const boundary = terrainSize / 2 - 50; // Keep away from edges
+    
+    let x, z, height;
+    let validPosition = false;
+    
+    // Keep trying until we find a valid position
+    while (!validPosition) {
+        // Generate random position
+        x = (Math.random() * (boundary * 2)) - boundary;
+        z = (Math.random() * (boundary * 2)) - boundary;
+        
+        // Get terrain height at this position
+        height = getTerrainHeight(x, z);
+        
+        // Check if this is a valid position (not in water, not too steep)
+        if (height > -10) { // Avoid water
+            // Check for obstacles
+            let tooCloseToObstacle = false;
+            
+            for (const obstacle of obstacles) {
+                const distance = Math.sqrt(
+                    Math.pow(x - obstacle.position.x, 2) + 
+                    Math.pow(z - obstacle.position.z, 2)
+                );
+                
+                // If too close to obstacle, try again
+                if (distance < 10) {
+                    tooCloseToObstacle = true;
+                    break;
+                }
+            }
+            
+            if (!tooCloseToObstacle) {
+                validPosition = true;
+            }
+        }
+    }
+    
+    // Create beam base (disc)
+    const baseGeometry = new THREE.CylinderGeometry(4, 4, 0.3, 32);
+    const baseMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00FF00, // Green
+        emissive: 0x00FF00,
+        emissiveIntensity: 0.7,
+        transparent: true,
+        opacity: 0.8
+    });
+    const base = new THREE.Mesh(baseGeometry, baseMaterial);
+    base.position.y = height + 0.15;
+    objectiveBeam.add(base);
+    
+    // Create outer ring
+    const ringGeometry = new THREE.TorusGeometry(4.5, 0.3, 16, 32);
+    const ringMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00FF00, // Green
+        emissive: 0x00FF00,
+        emissiveIntensity: 0.7,
+        transparent: true,
+        opacity: 0.8
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.position.y = height + 0.5;
+    ring.rotation.x = Math.PI / 2;
+    objectiveBeam.add(ring);
+    
+    // Create beam of light
+    const beamGeometry = new THREE.CylinderGeometry(2, 4, 50, 16, 10, true);
+    const beamMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00FF00, // Green
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide
+    });
+    const beam = new THREE.Mesh(beamGeometry, beamMaterial);
+    beam.position.y = height + 25;
+    objectiveBeam.add(beam);
+    
+    // Add particles inside the beam for more effect
+    const particleGeometry = new THREE.BufferGeometry();
+    const particleCount = 300;
+    const particlePositions = new Float32Array(particleCount * 3);
+    
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * 3;
+        const particleHeight = Math.random() * 50;
+        
+        particlePositions[i3] = Math.cos(angle) * radius;
+        particlePositions[i3 + 1] = particleHeight + height;
+        particlePositions[i3 + 2] = Math.sin(angle) * radius;
+    }
+    
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    
+    const particleMaterial = new THREE.PointsMaterial({
+        color: 0x00FF00, // Green
+        size: 0.3,
+        transparent: true,
+        opacity: 0.8
+    });
+    
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    objectiveBeam.add(particles);
+    
+    // Add point light in the center of the beam
+    const pointLight = new THREE.PointLight(0x00FF00, 1, 30);
+    pointLight.position.y = height + 3;
+    objectiveBeam.add(pointLight);
+    
+    // Position the entire beam group
+    objectiveBeam.position.set(x, 0, z);
+    
+    // Add animation for beam elements
+    objectiveBeam.userData = {
+        animation: {
+            ring: { rotation: 0 },
+            particles: {
+                positions: particlePositions,
+                count: particleCount
+            },
+            light: { intensity: 1 }
+        },
+        collisionRadius: 5, // Radius for collision detection
+    };
+    
+    // Add to scene
+    scene.add(objectiveBeam);
+    
+    console.log(`New objective beam placed at x:${x.toFixed(2)}, z:${z.toFixed(2)}`);
+}
+
+// Check for collisions with objective beam
+function checkObjectiveCollision() {
+    if (!objectiveBeam) return;
+    
+    // Get bicycle position
+    const bicyclePosition = new THREE.Vector2(bicycle.position.x, bicycle.position.z);
+    
+    // Get beam position
+    const beamPosition = new THREE.Vector2(
+        objectiveBeam.position.x,
+        objectiveBeam.position.z
+    );
+    
+    // Check distance
+    const distance = bicyclePosition.distanceTo(beamPosition);
+    
+    // If within collision radius, player collects objective
+    if (distance < objectiveBeam.userData.collisionRadius) {
+        collectObjective();
+    }
+}
+
+// Handle objective collection
+function collectObjective() {
+    // Increment score
+    playerScore++;
+    
+    // Update score display
+    updateScoreDisplay();
+    
+    // Create collection effect (particle explosion)
+    createCollectionEffect(
+        objectiveBeam.position.x,
+        getTerrainHeight(objectiveBeam.position.x, objectiveBeam.position.z) + 2,
+        objectiveBeam.position.z
+    );
+    
+    // Create new objective beam at different location
+    createObjectiveBeam();
+}
+
+// Create collection effect
+function createCollectionEffect(x, y, z) {
+    // Create particle explosion
+    const particleGeometry = new THREE.BufferGeometry();
+    const particleCount = 200;
+    const particlePositions = new Float32Array(particleCount * 3);
+    const particleVelocities = [];
+    
+    // Initialize particles at center
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        particlePositions[i3] = 0;
+        particlePositions[i3 + 1] = 0;
+        particlePositions[i3 + 2] = 0;
+        
+        // Random velocity for each particle
+        particleVelocities.push({
+            x: (Math.random() - 0.5) * 2,
+            y: Math.random() * 2,
+            z: (Math.random() - 0.5) * 2
+        });
+    }
+    
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    
+    // Create bright green particles
+    const particleMaterial = new THREE.PointsMaterial({
+        color: 0x00FF00,
+        size: 0.5,
+        transparent: true,
+        opacity: 1
+    });
+    
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    particles.position.set(x, y, z);
+    scene.add(particles);
+    
+    // Animation for particle explosion
+    let time = 0;
+    const duration = 1.5; // seconds
+    
+    function animateExplosion() {
+        time += clock.getDelta();
+        
+        // Update particle positions
+        const positions = particles.geometry.attributes.position.array;
+        
+        for (let i = 0; i < particleCount; i++) {
+            const i3 = i * 3;
+            const velocity = particleVelocities[i];
+            
+            // Move particles outward
+            positions[i3] += velocity.x * 0.5;
+            positions[i3 + 1] += velocity.y * 0.5 - 0.05; // Slight gravity
+            positions[i3 + 2] += velocity.z * 0.5;
+        }
+        
+        particles.geometry.attributes.position.needsUpdate = true;
+        
+        // Fade out particles
+        particleMaterial.opacity = 1 - (time / duration);
+        
+        if (time < duration) {
+            requestAnimationFrame(animateExplosion);
+        } else {
+            // Remove particles after animation completes
+            scene.remove(particles);
+            particles.geometry.dispose();
+            particleMaterial.dispose();
+        }
+    }
+    
+    // Start animation
+    animateExplosion();
+    
+    // Add a flash of light
+    const flashLight = new THREE.PointLight(0x00FF00, 5, 50);
+    flashLight.position.set(x, y, z);
+    scene.add(flashLight);
+    
+    // Fade out the flash light
+    let flashTime = 0;
+    const flashDuration = 0.5;
+    
+    function animateFlash() {
+        flashTime += clock.getDelta();
+        
+        // Fade out light
+        flashLight.intensity = 5 * (1 - (flashTime / flashDuration));
+        
+        if (flashTime < flashDuration) {
+            requestAnimationFrame(animateFlash);
+        } else {
+            // Remove light after animation completes
+            scene.remove(flashLight);
+        }
+    }
+    
+    // Start flash animation
+    animateFlash();
+    
+    // Play sound effect (if we add sound later)
+    console.log("Objective collected! Score: " + playerScore);
+}
+
+// Update score display
+function updateScoreDisplay() {
+    if (scoreDisplay) {
+        scoreDisplay.textContent = `Score: ${playerScore}`;
+        
+        // Add a highlight effect
+        scoreDisplay.style.backgroundColor = 'rgba(0, 255, 0, 0.7)';
+        setTimeout(() => {
+            scoreDisplay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        }, 300);
+    }
+}
+
+// Animate objective beam
+function animateObjectiveBeam(deltaTime) {
+    if (!objectiveBeam) return;
+    
+    const userData = objectiveBeam.userData.animation;
+    
+    // Rotate ring
+    userData.ring.rotation += deltaTime * 2;
+    objectiveBeam.children[1].rotation.z = userData.ring.rotation;
+    
+    // Animate particles
+    const positions = userData.particles.positions;
+    const particleCount = userData.particles.count;
+    
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        positions[i3 + 1] += deltaTime * 5; // Move particles upward
+        
+        // Reset particles that go too high
+        const height = getTerrainHeight(
+            objectiveBeam.position.x,
+            objectiveBeam.position.z
+        );
+        
+        if (positions[i3 + 1] > height + 50) {
+            positions[i3 + 1] = height;
+        }
+    }
+    
+    objectiveBeam.children[3].geometry.attributes.position.needsUpdate = true;
+    
+    // Pulse the light intensity
+    const time = Date.now() * 0.001;
+    objectiveBeam.children[4].intensity = 1 + Math.sin(time * 3) * 0.5;
 }
 
 // Start the game
